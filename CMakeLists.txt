@@ -108,7 +108,7 @@ target_include_directories(pathtracer PRIVATE ${MINIZ_INCLUDE_DIRS})
 target_compile_options(pathtracer PRIVATE ${MINIZ_CFLAGS_OTHER})
 
 # Set CUDA architectures (adjust based on your GPU)
-set_property(TARGET pathtracer PROPERTY CUDA_ARCHITECTURES 60 61 70 75 80 86)
+set_property(TARGET pathtracer PROPERTY CUDA_ARCHITECTURES 60 61 70 75 80 86 90)
 
 # Link libraries
 target_link_libraries(pathtracer
@@ -116,7 +116,7 @@ target_link_libraries(pathtracer
     ${CUDA_LIBRARIES}
     ${CUDA_cudart_static_LIBRARY}
     ${CUDA_nvrtc_LIBRARY}
-    /opt/cuda/lib64/libnvrtc.so
+    /opt/cuda/targets/x86_64-linux/lib/libnvrtc.so
     cuda
     ${OPENGL_LIBRARIES}
     ${SDL2_LIBRARIES}

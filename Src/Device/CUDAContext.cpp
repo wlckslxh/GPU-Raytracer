@@ -58,7 +58,9 @@ void CUDAContext::init() {
 
 	device = best_device;
 
-	CUDACALL(cuCtxCreate(&context, 0, device));
+	// CUDA 13+ requires CUctxCreateParams
+	CUctxCreateParams ctx_params = CUctxCreateParams{};
+	CUDACALL(cuCtxCreate(&context, &ctx_params, 0, device));
 
 	CUfunc_cache   config_cache;
 	CUsharedconfig config_shared;

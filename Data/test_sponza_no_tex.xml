@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<scene version="0.5.0">
+	<sensor type="perspective">
+		<transform name="toWorld">
+			<translate x="1.272743" y="3.097532" z="-3.189943"/>
+			<rotate y="1" angle="10.33"/>
+		</transform>
+	</sensor>
+	<bsdf type="twosided" id="Material__25">
+		<bsdf type="diffuse">
+			<rgb name="reflectance" value="0.5, 0.5, 0.5"/>
+		</bsdf>
+	</bsdf>
+	<shape type="obj" id="sponza_00">
+		<string name="filename" value="Data/Sponza/models/sponza_00.obj"/>
+		<ref id="Material__25"/>
+	</shape>
+</scene>
