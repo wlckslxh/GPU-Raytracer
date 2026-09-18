@@ -100,7 +100,7 @@ struct Array {
 	template<typename ... Args>
 	constexpr T & emplace_back(Args && ... args) {
 		grow_if_needed();
-		return *(new (&data()[count++]) T { std::forward<Args>(args) ... });
+		return *(new (&data()[count++]) T(std::forward<Args>(args)...));
 	}
 
 	constexpr void pop_back() {

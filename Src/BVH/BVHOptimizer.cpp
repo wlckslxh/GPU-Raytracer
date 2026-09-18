@@ -114,6 +114,8 @@ static void find_reinsertion(const BVH2 & bvh, const BVHNode2 & node_reinsert, A
 		int   node_index;
 		float induced_cost;
 
+		Pair(int node_index, float induced_cost) : node_index(node_index), induced_cost(induced_cost) { }
+
 		bool operator<(Pair other) const {
 			return induced_cost < other.induced_cost; // Compare based on induced cost
 		}

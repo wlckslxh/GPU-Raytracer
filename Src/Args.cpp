@@ -44,6 +44,10 @@ struct Option {
 	int num_args;
 
 	Function<void(const Array<StringView> &, size_t)> action;
+
+	template<typename Action>
+	Option(StringView name_short, StringView name_full, StringView help_text, int num_args, Action && action)
+		: name_short(name_short), name_full(name_full), help_text(help_text), num_args(num_args), action(std::forward<Action>(action)) { }
 };
 
 static void parse_args(const Array<StringView> & args, Allocator * allocator) {

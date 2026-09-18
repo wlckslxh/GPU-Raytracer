@@ -36,6 +36,8 @@ struct Index {
 
 struct Face {
 	Index indices[3]; // Always a triangular face
+
+	Face(Index index_0, Index index_1, Index index_2) : indices { index_0, index_1, index_2 } { }
 };
 
 static Index parse_index(Parser & parser) {

@@ -65,7 +65,7 @@ void CUDAContext::init() {
 	CUfunc_cache   config_cache;
 	CUsharedconfig config_shared;
 	CUDACALL(cuCtxGetCacheConfig    (&config_cache));
-	CUDACALL(cuCtxGetSharedMemConfig(&config_shared));
+	//CUDACALL(cuCtxGetSharedMemConfig(&config_shared));
 
 	size_t bytes_free = 0;
 	CUDACALL(cuMemGetInfo(&bytes_free, &total_memory));
@@ -85,11 +85,11 @@ void CUDAContext::init() {
 		case CU_FUNC_CACHE_PREFER_EQUAL:  IO::print("Cache Config: Prefer Equal\n"_sv);  break;
 	}
 
-	switch (config_shared) {
-		case CU_SHARED_MEM_CONFIG_DEFAULT_BANK_SIZE:    IO::print("Shared Memory Config: Default\n"_sv); break;
-		case CU_SHARED_MEM_CONFIG_FOUR_BYTE_BANK_SIZE:  IO::print("Shared Memory Config: 4 Bytes\n"_sv); break;
-		case CU_SHARED_MEM_CONFIG_EIGHT_BYTE_BANK_SIZE: IO::print("Shared Memory Config: 8 Bytes\n"_sv); break;
-	}
+	//switch (config_shared) {
+	//	case CU_SHARED_MEM_CONFIG_DEFAULT_BANK_SIZE:    IO::print("Shared Memory Config: Default\n"_sv); break;
+	//	case CU_SHARED_MEM_CONFIG_FOUR_BYTE_BANK_SIZE:  IO::print("Shared Memory Config: 4 Bytes\n"_sv); break;
+	//	case CU_SHARED_MEM_CONFIG_EIGHT_BYTE_BANK_SIZE: IO::print("Shared Memory Config: 8 Bytes\n"_sv); break;
+	//}
 
 	IO::print('\n');
 }

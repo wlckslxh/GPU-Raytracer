@@ -12,6 +12,8 @@ struct Mesh;
 struct PrimitiveRef {
 	int  index;
 	AABB aabb;
+
+	PrimitiveRef(int index, const AABB & aabb) : index(index), aabb(aabb) { }
 };
 
 struct ObjectSplit {

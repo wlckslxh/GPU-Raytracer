@@ -28,7 +28,7 @@ struct CUDAKernel {
 		CUDACALL(result);
 
 		CUDACALL(cuFuncSetCacheConfig    (kernel, CU_FUNC_CACHE_PREFER_L1));
-		CUDACALL(cuFuncSetSharedMemConfig(kernel, CU_SHARED_MEM_CONFIG_EIGHT_BYTE_BANK_SIZE));
+		//CUDACALL(cuFuncSetSharedMemConfig(kernel, CU_SHARED_MEM_CONFIG_EIGHT_BYTE_BANK_SIZE));
 	}
 
 	// Execute kernel without parameters
