@@ -405,6 +405,9 @@ void Pathtracer::calc_light_power(Allocator * frame_allocator) {
 	struct LightTriangle {
 		int    index;
 		double area;
+
+		LightTriangle(int index, double area)
+        : index(index), area(area) { }
 	};
 	Array<LightTriangle> light_triangles(frame_allocator);
 
@@ -735,6 +738,48 @@ void Pathtracer::update(float delta, Allocator * frame_allocator) {
 	}
 }
 
+static int get_child_node_index(const BVHNode8& node, int child_slot) {
+	unsigned bit = 1u << child_slot;
+
+	// Leaf child는 triangle을 가리킬 뿐 BVH8 child node가 없음
+	if ((unsigned(node.imask) & bit) == 0) {
+		return INVALID;
+	}
+
+	int internal_children_before = 0;
+
+	for (int i = 0; i < child_slot; i++) {
+		if (unsigned(node.imask) & (1u << i)) {
+			internal_children_before++;
+		}
+	}
+
+	return int(node.base_index_child) + internal_children_before;
+}
+
+static const char* get_node_type(
+	size_t node_index,
+	size_t tlas_node_count,
+	const Array<int>& mesh_data_bvh_offsets,
+	const Scene& scene
+) {
+	if (node_index < tlas_node_count) {
+		return "TLAS";
+	}
+
+	for (int i = 0; i < scene.asset_manager.mesh_datas.size(); i++) {
+		size_t begin = mesh_data_bvh_offsets[i];
+		size_t end =
+			begin + scene.asset_manager.mesh_datas[i].bvh->node_count();
+
+		if (node_index >= begin && node_index < end) {
+			return "BLAS";
+		}
+	}
+
+	return "RESERVED";
+}
+
 void Pathtracer::render() {
 	event_pool.reset();
 
@@ -795,6 +840,84 @@ void Pathtracer::render() {
 		}
 	}
 
+	//jichan add
+	if (!bvh_counter_dumped) {
+		CUDACALL(cuStreamSynchronize(nullptr));
+		
+		Array<uint32_t> host_counters(bvh_counter_count);
+		CUDAMemory::memcpy<uint32_t>(host_counters.data(), ptr_bvh_counter, bvh_counter_count);
+
+		FILE* file = nullptr;
+		fopen_s(&file, "bvh8_counter.csv", "wb");
+		if (file) {
+			fprintf(file, "node_index, visit_count\n");
+
+			for (size_t i = 0; i < bvh_counter_count; i++) {
+				fprintf(file, "%zu, %u\n", i, host_counters[i]);
+			}
+
+			fclose(file);
+			bvh_counter_dumped = true;
+		}
+
+		Array<BVHNode8> host_nodes(bvh_counter_count);
+		CUDAMemory::memcpy<BVHNode8>(host_nodes.data(), ptr_bvh_nodes_8, bvh_counter_count);
+		
+		fopen_s(&file, "bvh8_node.csv", "wb");
+		if (file) {
+			fprintf(file,
+				"node_index,node_type,"
+				"child_0,child_1,child_2,child_3,"
+				"child_4,child_5,child_6,child_7\n"
+			);
+
+			for (size_t i = 0; i < bvh_counter_count; i++) {
+				const BVHNode8& node = host_nodes[i];
+
+				const char* node_type = get_node_type(i, tlas->node_count(), mesh_data_bvh_offsets,	scene);
+
+				if (strcmp(node_type, "RESERVED") == 0) {
+					continue;
+				}
+
+				int children[8] = {
+					0, 0, 0, 0,
+					0, 0, 0, 0
+				};
+
+				int output_count = 0;
+				int internal_child_count = 0;
+
+				for (int child_slot = 0; child_slot < 8; child_slot++) {
+					unsigned meta = unsigned(node.meta[child_slot]);
+
+					// converter가 빈 child slot은 meta를 0으로 유지
+					if (meta == 0) {
+						continue;
+					}
+
+					bool is_internal = (unsigned(node.imask) & (1u << child_slot)) != 0;
+
+					if (is_internal) {
+						int child_node_index = int(node.base_index_child) + internal_child_count;
+
+						// +1: 실제 node 0과 empty 0을 구분
+						children[output_count++] = child_node_index + 1;
+						internal_child_count++;
+					}
+					else {
+						int leaf_index = int(node.base_index_triangle) + int(meta & 0b00011111);
+						// -(index + 1): leaf 여부와 leaf index를 함께 저장
+						children[output_count++] = -(leaf_index + 1);
+					}
+				}
+
+				fprintf(file,"%zu,%s,%d,%d,%d,%d,%d,%d,%d,%d\n", i, node_type, children[0], children[1], children[2], children[3], children[4], children[5], children[6], children[7]);
+			}
+			fclose(file);
+		}
+	}
+	
 	if (gpu_config.enable_svgf) {
 		// Temporal reprojection + integration
 		event_pool.record(&event_desc_svgf_reproject);
@@ -814,7 +937,7 @@ void Pathtracer::render() {
 			Util::swap(indirect_in, indirect_out);
 		}
 
-		// �-Trous Filter
+		// �-Trous Filter
 		for (int i = 0; i < gpu_config.num_atrous_iterations; i++) {
 			int step_size = 1 << i;
 
