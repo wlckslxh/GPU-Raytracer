@@ -16,7 +16,7 @@ static void GLAPIENTRY gl_message_callback(GLenum source, GLenum type, GLuint id
 	IO::print("GL CALLBACK: {} type = 0x{:x}, severity = 0x{:x}, message = {}\n"_sv, type == GL_DEBUG_TYPE_ERROR ? "** GL ERROR **"_sv : ""_sv, type, severity, message);
 }
 
-Window::Window(const String & title, int width, int height) {
+Window::Window(const String & title, int width, int height, int frame_buffer_width, int frame_buffer_height) {
 	SDL_Init(SDL_INIT_EVERYTHING);
 
 	SDL_GL_SetAttribute(SDL_GL_RED_SIZE,     8);
@@ -30,6 +30,8 @@ Window::Window(const String & title, int width, int height) {
 
 	this->width  = width;
 	this->height = height;
+	this->frame_buffer_width  = frame_buffer_width;
+	this->frame_buffer_height = frame_buffer_height;
 
 	window  = SDL_CreateWindow(title.data(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN);
 	context = SDL_GL_CreateContext(window);
@@ -66,7 +68,8 @@ Window::Window(const String & title, int width, int height) {
 	glBindTexture(GL_TEXTURE_2D, frame_buffer_handle);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, width, height, 0, GL_RGBA, GL_FLOAT, nullptr);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, frame_buffer_width, frame_buffer_height, 0, GL_RGBA, GL_FLOAT, nullptr);
+	glViewport(0, 0, width, height);
 
 	StackAllocator<KILOBYTES(4)> allocator;
 	String shader_source_vertex   = IO::file_read(String("Src/Shaders/post.vert", &allocator), &allocator);
@@ -95,12 +98,14 @@ Window::~Window() {
 
 void Window::set_size(int new_width, int new_height) {
 	SDL_SetWindowSize(window, new_width, new_height);
-	resize_frame_buffer(new_width, new_height);
+	width  = new_width;
+	height = new_height;
+	glViewport(0, 0, width, height);
 }
 
 void Window::resize_frame_buffer(int new_width, int new_height) {
-	width  = new_width;
-	height = new_height;
+	frame_buffer_width  = new_width;
+	frame_buffer_height = new_height;
 
 	glDeleteTextures(1, &frame_buffer_handle);
 	glGenTextures   (1, &frame_buffer_handle);
@@ -108,11 +113,9 @@ void Window::resize_frame_buffer(int new_width, int new_height) {
 	glBindTexture(GL_TEXTURE_2D, frame_buffer_handle);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, width, height, 0, GL_RGBA, GL_FLOAT, nullptr);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, frame_buffer_width, frame_buffer_height, 0, GL_RGBA, GL_FLOAT, nullptr);
 
-	glViewport(0, 0, width, height);
-
-	if (resize_handler) resize_handler(frame_buffer_handle, width, height);
+	if (resize_handler) resize_handler(frame_buffer_handle, frame_buffer_width, frame_buffer_height);
 }
 
 void Window::render_framebuffer() const {
@@ -147,10 +150,12 @@ void Window::swap() {
 	while (SDL_PollEvent(&event)) {
 		ImGui_ImplSDL2_ProcessEvent(&event);
 
-		switch (event.type) {
+			switch (event.type) {
 			case SDL_WINDOWEVENT: {
 				if (event.window.event == SDL_WINDOWEVENT_RESIZED) {
-					resize_frame_buffer(event.window.data1, event.window.data2);
+					width  = event.window.data1;
+					height = event.window.data2;
+					glViewport(0, 0, width, height);
 				}
 
 				break;
@@ -165,8 +170,11 @@ Array<Vector3> Window::read_frame_buffer(bool hdr, int & pitch) const {
 	int pack_alignment = 0;
 	glGetIntegerv(GL_PACK_ALIGNMENT, &pack_alignment);
 
-	pitch = int(Math::round_up(width * sizeof(Vector3), size_t(pack_alignment)) / sizeof(Vector3));
-	Array<Vector3> data(pitch * height);
+	const int output_width  = hdr ? frame_buffer_width  : width;
+	const int output_height = hdr ? frame_buffer_height : height;
+
+	pitch = int(Math::round_up(output_width * sizeof(Vector3), size_t(pack_alignment)) / sizeof(Vector3));
+	Array<Vector3> data(pitch * output_height);
 
 	glMemoryBarrier(GL_PIXEL_BUFFER_BARRIER_BIT);
 
@@ -177,7 +185,7 @@ Array<Vector3> Window::read_frame_buffer(bool hdr, int & pitch) const {
 	} else {
 		// For LDR output we use the Window's actual frame buffer,
 		// since this has been tonemapped and gamma corrected
-		glReadPixels(0, 0, width, height, GL_RGB, GL_FLOAT, data.data());
+		glReadPixels(0, 0, output_width, output_height, GL_RGB, GL_FLOAT, data.data());
 	}
 
 	return data;

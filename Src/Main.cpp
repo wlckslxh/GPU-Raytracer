@@ -67,8 +67,8 @@ static void init_integrator(OwnPtr<Integrator> & integrator, const Window & wind
 	}
 
 	switch (cpu_config.integrator) {
-		case IntegratorType::PATHTRACER: integrator = make_owned<Pathtracer>(window.frame_buffer_handle, window.width, window.height, scene); break;
-		case IntegratorType::AO:         integrator = make_owned<AO>        (window.frame_buffer_handle, window.width, window.height, scene); break;
+		case IntegratorType::PATHTRACER: integrator = make_owned<Pathtracer>(window.frame_buffer_handle, window.frame_buffer_width, window.frame_buffer_height, scene); break;
+		case IntegratorType::AO:         integrator = make_owned<AO>        (window.frame_buffer_handle, window.frame_buffer_width, window.frame_buffer_height, scene); break;
 		default: ASSERT_UNREACHABLE();
 	}
 }
@@ -94,7 +94,13 @@ int main(int num_args, char ** args) {
 		});
 	}
 
-	Window window("Pathtracer"_sv, cpu_config.initial_width, cpu_config.initial_height);
+	Window window(
+		"Pathtracer"_sv,
+		cpu_config.initial_window_width,
+		cpu_config.initial_window_height,
+		cpu_config.initial_width,
+		cpu_config.initial_height
+	);
 
 	CUDAContext::init();
 
@@ -109,7 +115,7 @@ int main(int num_args, char ** args) {
 			integrator->resize_init(frame_buffer_handle, width, height);
 		}
 	};
-	window.set_size(cpu_config.initial_width, cpu_config.initial_height);
+	window.set_size(cpu_config.initial_window_width, cpu_config.initial_window_height);
 
 	init_integrator(integrator, window, scene);
 	window.show();
@@ -171,7 +177,9 @@ int main(int num_args, char ** args) {
 		if (ImGui::IsMouseClicked(0) && !ImGui::GetIO().WantCaptureMouse) {
 			Input::mouse_position(&last_pixel_query_x, &last_pixel_query_y);
 
-			integrator->set_pixel_query(last_pixel_query_x, last_pixel_query_y);
+			const int render_x = last_pixel_query_x * integrator->screen_width / window.width;
+			const int render_y = last_pixel_query_y * integrator->screen_height / window.height;
+			integrator->set_pixel_query(render_x, render_y);
 		}
 
 		calc_timing();
@@ -181,7 +189,7 @@ int main(int num_args, char ** args) {
 			ScopeTimer timer("Hot Reload"_sv);
 
 			integrator->cuda_free();
-			integrator->cuda_init(window.frame_buffer_handle, window.width, window.height);
+			integrator->cuda_init(window.frame_buffer_handle, window.frame_buffer_width, window.frame_buffer_height);
 		}
 
 		if (perf_test.frame_end((float)timing.delta_time)) break;
@@ -224,7 +232,9 @@ static void capture_screen(const Window & window, const Integrator & integrator,
 	int pitch = 0;
 	Array<Vector3> data = window.read_frame_buffer(hdr, pitch);
 
-	exporter(filename, pitch, window.width, window.height, data);
+	const int output_width  = hdr ? window.frame_buffer_width  : window.width;
+	const int output_height = hdr ? window.frame_buffer_height : window.height;
+	exporter(filename, pitch, output_width, output_height, data);
 
 	auto export_aov = [&integrator](AOVType aov_type, const String & filename) {
 		if (!integrator.aov_is_enabled(aov_type)) return;

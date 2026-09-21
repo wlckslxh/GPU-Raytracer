@@ -30,8 +30,13 @@ enum struct BVHType {
 };
 
 struct CPUConfig {
+	// CUDA render target resolution. Scene film settings and --width/--height modify these.
 	int initial_width  = 2560;
 	int initial_height = 1440;
+
+	// SDL window size. This only controls presentation and GUI size.
+	int initial_window_width  = 1280;
+	int initial_window_height = 720;
 
 	Array<String> scene_filenames;
 	String        sky_filename;

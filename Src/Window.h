@@ -21,10 +21,12 @@ struct Window {
 
 	int width;
 	int height;
+	int frame_buffer_width;
+	int frame_buffer_height;
 
 	bool is_closed = false;
 
-	Window(const String & title, int width, int height);
+	Window(const String & title, int width, int height, int frame_buffer_width, int frame_buffer_height);
 	~Window();
 
 	void set_size(int new_width, int new_height);
