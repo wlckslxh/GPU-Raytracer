@@ -25,9 +25,9 @@ struct BVH8Node {
 };
 
 __device__ __constant__ const BVH8Node * bvh8_nodes;
-// NVRTC는 이 프로젝트의 런타임 컴파일 경로에서 표준 헤더를 찾지 못한다.
-// unsigned long long은 CUDA device에서 64-bit unsigned integer이다.
+//jichan add
 __device__ __constant__ unsigned long long * bvh_counter;
+__device__ __constant__ unsigned long long * triangle_counter;
 
 __device__ inline unsigned bvh8_node_intersect(
 	const Ray & ray,
@@ -246,7 +246,11 @@ __device__ inline void bvh8_trace(TraversalData * traversal_data, int ray_count,
 					int triangle_index = msb(triangle_group.y);
 					triangle_group.y &= ~(1 << triangle_index);
 
-					triangle_intersect(mesh_id, triangle_group.x + triangle_index, ray, ray_hit);
+					// triangle_index is only the bit offset within this node's leaf group.
+					// Count using the global reordered GPU triangle-buffer index instead.
+					int triangle_id = triangle_group.x + triangle_index;
+					atomicAdd(&triangle_counter[triangle_id], 1ull);
+					triangle_intersect(mesh_id, triangle_id, ray, ray_hit);
 				}
 			}
 

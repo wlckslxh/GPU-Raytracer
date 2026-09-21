@@ -155,8 +155,11 @@ struct Integrator {
 	CUDAMemory::Ptr<BVHNode2>  ptr_bvh_nodes_2;
 	CUDAMemory::Ptr<BVHNode4>  ptr_bvh_nodes_4;
 	CUDAMemory::Ptr<BVHNode8>  ptr_bvh_nodes_8;
-	CUDAMemory::Ptr<uint64_t>  ptr_bvh_counter; //jichan add
+	//jichan add
+	CUDAMemory::Ptr<uint64_t>  ptr_bvh_counter;
+	CUDAMemory::Ptr<uint64_t> ptr_triangle_counter;
 	size_t bvh_counter_count = 0;
+	size_t triangle_counter_count = 0;
 	uint64_t bvh_counter_dumped = 0;
 	CUDAMemory::Ptr<int>       ptr_mesh_bvh_root_indices;
 	CUDAMemory::Ptr<int>       ptr_mesh_material_ids;

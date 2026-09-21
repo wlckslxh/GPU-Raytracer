@@ -374,11 +374,16 @@ void Integrator::init_geometry() {
 
 			ptr_bvh_nodes_8 = CUDAMemory::malloc<BVHNode8>(aggregated_bvh_nodes);
 			ptr_bvh_counter = CUDAMemory::malloc<uint64_t>(aggregated_bvh_node_count); //jichan add
+			ptr_triangle_counter = CUDAMemory::malloc<uint64_t>(aggregated_index_count);
 			bvh_counter_count = aggregated_bvh_node_count;
+			triangle_counter_count = aggregated_index_count;
+
 			cuda_module.get_global("bvh8_nodes").set_value(ptr_bvh_nodes_8);
 			cuda_module.get_global("bvh_counter").set_value(ptr_bvh_counter);
+			cuda_module.get_global("triangle_counter").set_value(ptr_triangle_counter);
 
-			CUDAMemory::memset_async(ptr_bvh_counter, 0, bvh_counter_count, memory_stream);
+			CUDAMemory::memset_async(ptr_bvh_counter, 0, aggregated_bvh_node_count, memory_stream);
+			CUDAMemory::memset_async(ptr_triangle_counter, 0, aggregated_index_count, memory_stream);
 
 			tlas           = make_owned<BVH8>(PinnedAllocator::instance());
 			tlas_converter = make_owned<BVH8Converter>(static_cast<BVH8 &>(*tlas.get()), tlas_raw);
@@ -457,6 +462,7 @@ void Integrator::free_geometry() {
 		case BVHType::BVH8: CUDAMemory::free(ptr_bvh_nodes_8); break;
 	}
 	CUDAMemory::free(ptr_bvh_counter); //jichan add
+	CUDAMemory::free(ptr_triangle_counter);
 	CUDAMemory::free(ptr_triangles);
 }
 

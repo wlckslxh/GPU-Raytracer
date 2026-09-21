@@ -849,20 +849,16 @@ void Pathtracer::render() {
 
 		Array<BVHNode8> host_nodes(bvh_counter_count);
 		CUDAMemory::memcpy<BVHNode8>(host_nodes.data(), ptr_bvh_nodes_8, bvh_counter_count);
+
+		Array<uint64_t> host_triangle_counters(triangle_counter_count);
+		CUDAMemory::memcpy<uint64_t>(host_triangle_counters.data(), ptr_triangle_counter, triangle_counter_count);
 		
 		FILE* file = nullptr;
 		fopen_s(&file, "bvh8.csv", "wb");
 		if (file) {
 			fprintf(file,
-				"index,node_type,count,"
-				"child_index_0,child_count_0,"
-				"child_index_1,child_count_1,"
-				"child_index_2,child_count_2,"
-				"child_index_3,child_count_3,"
-				"child_index_4,child_count_4,"
-				"child_index_5,child_count_5,"
-				"child_index_6,child_count_6,"
-				"child_index_7,child_count_7\n"
+				"node_index,node_type,node_count,"
+				"child_slot,child_kind,target_index,target_count\n"
 			);
 
 			for (size_t i = 0; i < bvh_counter_count; i++) {
@@ -874,52 +870,47 @@ void Pathtracer::render() {
 					continue;
 				}
 
-				int children[8] = {
-					0, 0, 0, 0,
-					0, 0, 0, 0
-				};
-				uint64_t child_counts[8] = {
-					0, 0, 0, 0,
-					0, 0, 0, 0
-				};
-
-				int output_count = 0;
-
 				for (int child_slot = 0; child_slot < 8; child_slot++) {
-					unsigned meta = unsigned(node.meta[child_slot]);
+					const unsigned meta = unsigned(node.meta[child_slot]);
 
-					// converter가 빈 child slot은 meta를 0으로 유지
 					if (meta == 0) {
 						continue;
 					}
 					
-					bool is_internal = (unsigned(node.imask) & (1u << child_slot)) != 0;
+					const bool is_internal = (unsigned(node.imask) & (1u << child_slot)) != 0;
 
 					if (is_internal) {
-						int child_node_index = get_child_node_index(node, child_slot);
-
-						// 실제 BVH node index를 그대로 기록한다.
-						children[output_count++] = child_node_index;
-						child_counts[output_count - 1] = host_counters[child_node_index];
+						const int child_node_index = get_child_node_index(node, child_slot);
+						fprintf(file, "%zu,%s,%llu,%d,internal,%d,%llu\n",
+							i, node_type,
+							static_cast<unsigned long long>(host_counters[i]),
+							child_slot, child_node_index,
+							static_cast<unsigned long long>(host_counters[child_node_index]));
 					}
 					else {
-						int leaf_index = int(node.base_index_triangle) + int(meta & 0b00011111);
-						// -(index + 1): leaf 여부와 leaf index를 함께 저장
-						children[output_count++] = -(leaf_index + 1);
-						// Leaf는 BVH node가 아니므로 visit counter가 없음
+						// meta 하위 5 bit는 이 node primitive group 내 시작 offset,
+						// 상위 3 bit의 unary mask는 이 child가 보유한 primitive 개수다.
+						const int first_primitive = int(node.base_index_triangle) + int(meta & 0x1f);
+						const unsigned primitive_mask = meta >> 5;
+						int primitive_count = 0;
+						for (unsigned bits = primitive_mask; bits != 0; bits &= bits - 1) {
+							primitive_count++;
+						}
+
+						const bool is_tlas = strcmp(node_type, "TLAS") == 0;
+						for (int primitive_offset = 0; primitive_offset < primitive_count; primitive_offset++) {
+							const int target_index = first_primitive + primitive_offset;
+							const char * child_kind = is_tlas ? "mesh" : "triangle";
+							const uint64_t target_count = is_tlas ? 0ull : host_triangle_counters[target_index];
+
+							fprintf(file, "%zu,%s,%llu,%d,%s,%d,%llu\n",
+								i, node_type,
+								static_cast<unsigned long long>(host_counters[i]),
+								child_slot, child_kind, target_index,
+								static_cast<unsigned long long>(target_count));
+						}
 					}
 				}
-
-				fprintf(file,
-					"%zu,%s,%llu,"
-					"%d,%llu,%d,%llu,%d,%llu,%d,%llu,"
-					"%d,%llu,%d,%llu,%d,%llu,%d,%llu\n",
-					i, node_type, static_cast<unsigned long long>(host_counters[i]),
-					children[0], static_cast<unsigned long long>(child_counts[0]), children[1], static_cast<unsigned long long>(child_counts[1]),
-					children[2], static_cast<unsigned long long>(child_counts[2]), children[3], static_cast<unsigned long long>(child_counts[3]),
-					children[4], static_cast<unsigned long long>(child_counts[4]), children[5], static_cast<unsigned long long>(child_counts[5]),
-					children[6], static_cast<unsigned long long>(child_counts[6]), children[7], static_cast<unsigned long long>(child_counts[7])
-				);
 			}
 			fclose(file);
 		}
