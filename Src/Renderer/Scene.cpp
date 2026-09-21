@@ -7,6 +7,7 @@
 
 #include "Assets/OBJLoader.h"
 #include "Assets/PLYLoader.h"
+#include "Assets/GLTFLoader.h"
 #include "Assets/Mitsuba/MitsubaLoader.h"
 
 #include "Material.h"
@@ -30,6 +31,8 @@ Scene::Scene(Allocator * allocator) : allocator(allocator), asset_manager(alloca
 			add_mesh(scene_filename, asset_manager.add_mesh_data(scene_filename, OBJLoader::load));
 		} else if (file_extension == "ply") {
 			add_mesh(scene_filename, asset_manager.add_mesh_data(scene_filename, PLYLoader::load));
+		} else if (file_extension == "gltf" || file_extension == "glb") {
+			add_mesh(scene_filename, asset_manager.add_mesh_data(scene_filename, GLTFLoader::load));
 		} else if (file_extension == "xml") {
 			MitsubaLoader::load(scene_filename, allocator, *this);
 		} else {

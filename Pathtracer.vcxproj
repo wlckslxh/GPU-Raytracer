@@ -214,6 +214,7 @@
     <ClCompile Include="Src\Assets\Mitsuba\SerializedLoader.cpp" />
     <ClCompile Include="Src\Assets\Mitsuba\XMLParser.cpp" />
     <ClCompile Include="Src\Assets\OBJLoader.cpp" />
+    <ClCompile Include="Src\Assets\GLTFLoader.cpp" />
     <ClCompile Include="Src\Assets\PLYLoader.cpp" />
     <ClCompile Include="Src\Assets\TextureLoader.cpp" />
     <ClCompile Include="Src\BVH\Builders\BVHPartitions.cpp" />
@@ -257,13 +258,16 @@
     <ClInclude Include="Src\Args.h" />
     <ClInclude Include="Src\Assets\AssetManager.h" />
     <ClInclude Include="Src\Assets\BVHLoader.h" />
+    <ClInclude Include="Src\Assets\json.hpp" />
     <ClInclude Include="Src\Assets\Mitsuba\MitshairLoader.h" />
     <ClInclude Include="Src\Assets\Mitsuba\MitsubaLoader.h" />
     <ClInclude Include="Src\Assets\Mitsuba\SerializedLoader.h" />
     <ClInclude Include="Src\Assets\Mitsuba\XMLParser.h" />
     <ClInclude Include="Src\Assets\OBJLoader.h" />
+    <ClInclude Include="Src\Assets\GLTFLoader.h" />
     <ClInclude Include="Src\Assets\PLYLoader.h" />
     <ClInclude Include="Src\Assets\TextureLoader.h" />
+    <ClInclude Include="Src\Assets\tiny_gltf.h" />
     <ClInclude Include="Src\BVH\Builders\BVHPartitions.h" />
     <ClInclude Include="Src\BVH\Builders\SAHBuilder.h" />
     <ClInclude Include="Src\BVH\Builders\SBVHBuilder.h" />

@@ -75,6 +75,7 @@ static void init_integrator(OwnPtr<Integrator> & integrator, const Window & wind
 
 int main(int num_args, char ** args) {
 	Args::parse(num_args, args);
+	cpu_config.scene_filenames.push_back("Data/suntemple/SunTemple.gltf");
 	if (cpu_config.scene_filenames.size() == 0) {
 		cpu_config.scene_filenames.push_back("Data/sponza/scene.xml"_sv);
 	}

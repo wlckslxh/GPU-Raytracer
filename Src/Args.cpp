@@ -70,7 +70,7 @@ static void parse_args(const Array<StringView> & args, Allocator * allocator) {
 	options.emplace_back("N"_sv, "samples"_sv, "Sets a target number of samples to use"_sv,                1, [](const Array<StringView> & args, size_t i) { cpu_config.output_sample_index = parse_arg_int(args[i + 1]); });
 	options.emplace_back("o"_sv, "output"_sv,  "Sets path to output file. Supported formats: ppm, exr"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.output_filename     = args[i + 1]; });
 
-	options.emplace_back("s"_sv, "scene"_sv, "Sets path to scene file. Supported formats: Mitsuba XML, OBJ, and PLY"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.scene_filenames.push_back(args[i + 1]); });
+	options.emplace_back("s"_sv, "scene"_sv, "Sets path to scene file. Supported formats: Mitsuba XML, OBJ, PLY, glTF, GLB"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.scene_filenames.push_back(args[i + 1]); });
 	options.emplace_back("S"_sv, "sky"_sv,   "Sets path to sky file. Supported formats: HDR"_sv,                         1, [](const Array<StringView> & args, size_t i) { cpu_config.sky_filename = args[i + 1]; });
 
 	options.emplace_back("b"_sv, "bvh"_sv, "Sets type of BLAS BVH used. Supported options: sah, sbvh, bvh4, bvh8"_sv, 1, [](const Array<StringView> & args, size_t i) {

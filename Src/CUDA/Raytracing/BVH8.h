@@ -25,7 +25,9 @@ struct BVH8Node {
 };
 
 __device__ __constant__ const BVH8Node * bvh8_nodes;
-__device__ __constant__ unsigned * bvh_counter;
+// NVRTC는 이 프로젝트의 런타임 컴파일 경로에서 표준 헤더를 찾지 못한다.
+// unsigned long long은 CUDA device에서 64-bit unsigned integer이다.
+__device__ __constant__ unsigned long long * bvh_counter;
 
 __device__ inline unsigned bvh8_node_intersect(
 	const Ray & ray,
@@ -177,7 +179,7 @@ __device__ inline void bvh8_trace(TraversalData * traversal_data, int ray_count,
 				unsigned relative_index = __popc(hits_imask & ~(0xffffffff << slot_index));
 
 				unsigned child_node_index = child_index_base + relative_index;
-				atomicAdd(&bvh_counter[child_node_index], 1);//jichan add
+				atomicAdd(&bvh_counter[child_node_index], 1ull);//jichan add
 
 				float4 node_0 = __ldg(&bvh8_nodes[child_node_index].node_0);
 				float4 node_1 = __ldg(&bvh8_nodes[child_node_index].node_1);

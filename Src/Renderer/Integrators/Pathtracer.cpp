@@ -841,34 +841,28 @@ void Pathtracer::render() {
 	}
 
 	//jichan add
-	if (!bvh_counter_dumped) {
+	if (bvh_counter_dumped + 1 == 600ull) {
 		CUDACALL(cuStreamSynchronize(nullptr));
 		
-		Array<uint32_t> host_counters(bvh_counter_count);
-		CUDAMemory::memcpy<uint32_t>(host_counters.data(), ptr_bvh_counter, bvh_counter_count);
-
-		FILE* file = nullptr;
-		fopen_s(&file, "bvh8_counter.csv", "wb");
-		if (file) {
-			fprintf(file, "node_index, visit_count\n");
-
-			for (size_t i = 0; i < bvh_counter_count; i++) {
-				fprintf(file, "%zu, %u\n", i, host_counters[i]);
-			}
-
-			fclose(file);
-			bvh_counter_dumped = true;
-		}
+		Array<uint64_t> host_counters(bvh_counter_count);
+		CUDAMemory::memcpy<uint64_t>(host_counters.data(), ptr_bvh_counter, bvh_counter_count);
 
 		Array<BVHNode8> host_nodes(bvh_counter_count);
 		CUDAMemory::memcpy<BVHNode8>(host_nodes.data(), ptr_bvh_nodes_8, bvh_counter_count);
 		
-		fopen_s(&file, "bvh8_node.csv", "wb");
+		FILE* file = nullptr;
+		fopen_s(&file, "bvh8.csv", "wb");
 		if (file) {
 			fprintf(file,
-				"node_index,node_type,"
-				"child_0,child_1,child_2,child_3,"
-				"child_4,child_5,child_6,child_7\n"
+				"index,node_type,count,"
+				"child_index_0,child_count_0,"
+				"child_index_1,child_count_1,"
+				"child_index_2,child_count_2,"
+				"child_index_3,child_count_3,"
+				"child_index_4,child_count_4,"
+				"child_index_5,child_count_5,"
+				"child_index_6,child_count_6,"
+				"child_index_7,child_count_7\n"
 			);
 
 			for (size_t i = 0; i < bvh_counter_count; i++) {
@@ -884,9 +878,12 @@ void Pathtracer::render() {
 					0, 0, 0, 0,
 					0, 0, 0, 0
 				};
+				uint64_t child_counts[8] = {
+					0, 0, 0, 0,
+					0, 0, 0, 0
+				};
 
 				int output_count = 0;
-				int internal_child_count = 0;
 
 				for (int child_slot = 0; child_slot < 8; child_slot++) {
 					unsigned meta = unsigned(node.meta[child_slot]);
@@ -895,28 +892,39 @@ void Pathtracer::render() {
 					if (meta == 0) {
 						continue;
 					}
-
+					
 					bool is_internal = (unsigned(node.imask) & (1u << child_slot)) != 0;
 
 					if (is_internal) {
-						int child_node_index = int(node.base_index_child) + internal_child_count;
+						int child_node_index = get_child_node_index(node, child_slot);
 
-						// +1: 실제 node 0과 empty 0을 구분
-						children[output_count++] = child_node_index + 1;
-						internal_child_count++;
+						// 실제 BVH node index를 그대로 기록한다.
+						children[output_count++] = child_node_index;
+						child_counts[output_count - 1] = host_counters[child_node_index];
 					}
 					else {
 						int leaf_index = int(node.base_index_triangle) + int(meta & 0b00011111);
 						// -(index + 1): leaf 여부와 leaf index를 함께 저장
 						children[output_count++] = -(leaf_index + 1);
+						// Leaf는 BVH node가 아니므로 visit counter가 없음
 					}
 				}
 
-				fprintf(file,"%zu,%s,%d,%d,%d,%d,%d,%d,%d,%d\n", i, node_type, children[0], children[1], children[2], children[3], children[4], children[5], children[6], children[7]);
+				fprintf(file,
+					"%zu,%s,%llu,"
+					"%d,%llu,%d,%llu,%d,%llu,%d,%llu,"
+					"%d,%llu,%d,%llu,%d,%llu,%d,%llu\n",
+					i, node_type, static_cast<unsigned long long>(host_counters[i]),
+					children[0], static_cast<unsigned long long>(child_counts[0]), children[1], static_cast<unsigned long long>(child_counts[1]),
+					children[2], static_cast<unsigned long long>(child_counts[2]), children[3], static_cast<unsigned long long>(child_counts[3]),
+					children[4], static_cast<unsigned long long>(child_counts[4]), children[5], static_cast<unsigned long long>(child_counts[5]),
+					children[6], static_cast<unsigned long long>(child_counts[6]), children[7], static_cast<unsigned long long>(child_counts[7])
+				);
 			}
 			fclose(file);
 		}
 	}
+	bvh_counter_dumped++;
 	
 	if (gpu_config.enable_svgf) {
 		// Temporal reprojection + integration

@@ -11,6 +11,106 @@
 
 #include "Util/BlueNoise.h"
 
+namespace {
+
+constexpr uint32_t CAMERA_VIEWS_PER_SET = 200;
+constexpr uint32_t CAMERA_PATH_SET_CAPACITY = 5;
+
+struct CameraKeyframe {
+	Vector3 position;
+	Vector3 rotation_deg; // Vulkan에서 기록한 Euler 순서: (x, y, z)
+};
+
+struct CameraPath {
+	const CameraKeyframe * keys = nullptr;
+	uint32_t key_count = 0;
+};
+
+// 새 경로는 아래 set_1 ~ set_4 함수에 키를 추가하면 된다.
+// 각 세트는 독립적인 경로이며, 한 세트의 마지막 프레임 다음에는
+// 다음 세트의 첫 키에서 즉시 측정을 시작한다.
+CameraPath camera_path_set_0() {
+	static const CameraKeyframe keys[] = {
+		{ Vector3( 1.509223f, 9.325905f,  8.422721f), Vector3(-12.999950f,   15.799769f, 2.337500f) },
+		{ Vector3(-5.370959f, 8.144957f,  4.906831f), Vector3( -5.899952f,  -33.925194f, 2.337500f) },
+		{ Vector3(-4.820619f, 9.953234f, -0.164853f), Vector3(-15.124947f,  -85.800217f, 2.337500f) },
+		{ Vector3( 0.131678f, 9.030156f, -5.118729f), Vector3( -8.549964f, -172.324646f, 2.337500f) },
+		{ Vector3( 6.261304f, 9.030156f, -4.171083f), Vector3(-10.524961f, -230.424255f, 2.337500f) },
+		{ Vector3( 1.509223f, 9.325905f,  8.422721f), Vector3(-12.999950f,   15.799769f, 2.337500f) },
+	};
+	return { keys, uint32_t(sizeof(keys) / sizeof(keys[0])) };
+}
+
+CameraPath camera_path_set_1() { 
+	static const CameraKeyframe keys[] = {
+		{ Vector3(2.650054, 7.276057, 17.824575), Vector3(-15.299947, 152.299515, 2.337500) },
+		{ Vector3(7.978261, 5.688210, 30.791241), Vector3(-13.124947, 72.599487, 2.337500) },
+		{ Vector3(-5.946168, 3.147491, 36.286228), Vector3(1.800034, -391.873962, 2.337500) },
+		{ Vector3(-6.655435, 6.790444, 18.770409), Vector3(-10.724976, -486.823975, 2.337500) },
+		{ Vector3(2.650054, 7.276057, 17.824575), Vector3(-15.299947, 152.299515, 2.337500) },
+	};
+	return { keys, uint32_t(sizeof(keys) / sizeof(keys[0])) }; }
+
+CameraPath camera_path_set_2() {
+	static const CameraKeyframe keys[] = {
+		{ Vector3(0.566773, 4.625849, 39.849316), Vector3(-3.574955, -184.574585, 2.337500) },
+		{ Vector3(0.312627, 5.891113, 70.639893), Vector3(-4.549967, -357.524628, 2.337500) },
+	};
+	return { keys, uint32_t(sizeof(keys) / sizeof(keys[0])) };
+}
+CameraPath camera_path_set_3() { return {}; }
+CameraPath camera_path_set_4() { return {}; }
+
+CameraPath get_camera_path_set(uint64_t set_index) {
+	switch (set_index) {
+		case 0: return camera_path_set_0();
+		case 1: return camera_path_set_1();
+		case 2: return camera_path_set_2();
+		case 3: return camera_path_set_3();
+		case 4: return camera_path_set_4();
+		default: return {};
+	}
+}
+
+uint32_t active_camera_path_set_count() {
+	uint32_t count = 0;
+	while (count < CAMERA_PATH_SET_CAPACITY) {
+		const CameraPath path = get_camera_path_set(count);
+		if (path.keys == nullptr || path.key_count < 2) break;
+		count++;
+	}
+	return count;
+}
+
+void apply_camera_path_lerp(Camera & camera, const CameraPath & path, uint32_t view_in_set) {
+	const uint32_t clamped_view = Math::min(view_in_set, CAMERA_VIEWS_PER_SET - 1);
+	const float path_t = float(clamped_view) / float(CAMERA_VIEWS_PER_SET - 1);
+	const float segment_f = path_t * float(path.key_count - 1);
+	const uint32_t segment = Math::min(uint32_t(segment_f), path.key_count - 2);
+	const float local_t = segment_f - float(segment);
+
+	const CameraKeyframe & a = path.keys[segment];
+	const CameraKeyframe & b = path.keys[segment + 1];
+	camera.position = a.position * (1.0f - local_t) + b.position * local_t;
+
+	// Vulkan Euler (x, y, z) -> from_euler(yaw=z, pitch=y, roll=x).
+	const Quaternion rotation_a = Quaternion::from_euler(
+		Math::deg_to_rad(a.rotation_deg.z), Math::deg_to_rad(a.rotation_deg.y), Math::deg_to_rad(a.rotation_deg.x));
+	const Quaternion rotation_b = Quaternion::from_euler(
+		Math::deg_to_rad(b.rotation_deg.z), Math::deg_to_rad(b.rotation_deg.y), Math::deg_to_rad(b.rotation_deg.x));
+	camera.rotation = Quaternion::nlerp(rotation_a, rotation_b, local_t);
+}
+
+void apply_camera_path_set(Camera & camera, uint64_t global_view_index) {
+	const uint64_t set_index = global_view_index / CAMERA_VIEWS_PER_SET;
+	const CameraPath path = get_camera_path_set(set_index);
+	if (path.keys != nullptr && path.key_count >= 2) {
+		apply_camera_path_lerp(camera, path, uint32_t(global_view_index % CAMERA_VIEWS_PER_SET));
+	}
+}
+
+} // namespace
+
 void Integrator::init_globals() {
 	global_camera      = cuda_module.get_global("camera");
 	global_config      = cuda_module.get_global("config");
@@ -273,7 +373,7 @@ void Integrator::init_geometry() {
 			}
 
 			ptr_bvh_nodes_8 = CUDAMemory::malloc<BVHNode8>(aggregated_bvh_nodes);
-			ptr_bvh_counter = CUDAMemory::malloc<uint32_t>(aggregated_bvh_node_count); //jichan add
+			ptr_bvh_counter = CUDAMemory::malloc<uint64_t>(aggregated_bvh_node_count); //jichan add
 			bvh_counter_count = aggregated_bvh_node_count;
 			cuda_module.get_global("bvh8_nodes").set_value(ptr_bvh_nodes_8);
 			cuda_module.get_global("bvh_counter").set_value(ptr_bvh_counter);
@@ -453,7 +553,9 @@ void Integrator::update(float delta, Allocator * frame_allocator) {
 		invalidated_scene = false;
 		build_tlas();
 	}
+	apply_camera_path_set(scene.camera, bvh_counter_dumped);
 
+	invalidated_camera = true;
 	scene.camera.update(delta);
 
 	if (scene.camera.moved || invalidated_camera) {

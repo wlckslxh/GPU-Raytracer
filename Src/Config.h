@@ -30,8 +30,8 @@ enum struct BVHType {
 };
 
 struct CPUConfig {
-	int initial_width  = 900;
-	int initial_height = 600;
+	int initial_width  = 1200;
+	int initial_height = 800;
 
 	Array<String> scene_filenames;
 	String        sky_filename;
