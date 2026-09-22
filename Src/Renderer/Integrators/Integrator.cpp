@@ -265,6 +265,7 @@ void Integrator::init_geometry() {
 	}
 
 	Array<CUDATriangle> aggregated_triangles(aggregated_index_count);
+	Array<int> aggregated_triangle_material_ids(aggregated_index_count);
 	reverse_indices.resize(aggregated_triangle_count);
 
 	for (int m = 0; m < mesh_data_count; m++) {
@@ -273,6 +274,10 @@ void Integrator::init_geometry() {
 		for (size_t i = 0; i < mesh_data.bvh->indices.size(); i++) {
 			int index = mesh_data.bvh->indices[i];
 			const Triangle & triangle = mesh_data.triangles[index];
+			aggregated_triangle_material_ids[mesh_data_index_offsets[m] + i] =
+				mesh_data.material_ids.size() == mesh_data.triangles.size()
+					? mesh_data.material_ids[index]
+					: INVALID;
 
 			aggregated_triangles[mesh_data_index_offsets[m] + i].position_0      = triangle.position_0;
 			aggregated_triangles[mesh_data_index_offsets[m] + i].position_edge_1 = triangle.position_1 - triangle.position_0;
@@ -292,6 +297,8 @@ void Integrator::init_geometry() {
 
 	ptr_triangles = CUDAMemory::malloc(aggregated_triangles);
 	cuda_module.get_global("triangles").set_value(ptr_triangles);
+	ptr_triangle_material_ids = CUDAMemory::malloc(aggregated_triangle_material_ids);
+	cuda_module.get_global("triangle_material_ids").set_value(ptr_triangle_material_ids);
 
 	pinned_mesh_bvh_root_indices             = CUDAMemory::malloc_pinned<int>      (scene.meshes.size());
 	pinned_mesh_material_ids                 = CUDAMemory::malloc_pinned<int>      (scene.meshes.size());
@@ -509,6 +516,7 @@ void Integrator::free_geometry() {
 	CUDAMemory::free(ptr_triangle_counter);
 	CUDAMemory::free(ptr_mesh_counter);
 	CUDAMemory::free(ptr_triangles);
+	CUDAMemory::free(ptr_triangle_material_ids);
 }
 
 void Integrator::free_sky() {

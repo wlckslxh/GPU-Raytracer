@@ -44,12 +44,16 @@ public:
 	Handle<MeshData> add_mesh_data(String filename,                      FallbackLoader fallback_loader);
 	Handle<MeshData> add_mesh_data(String filename, String bvh_filename, FallbackLoader fallback_loader);
 	Handle<MeshData> add_mesh_data(Array<Triangle> triangles);
+	Handle<MeshData> add_mesh_data(Array<Triangle> triangles, Array<int> material_ids);
 
 	Handle<Material> add_material(Material material);
 
 	Handle<Medium> add_medium(Medium medium);
 
 	Handle<Texture> add_texture(String filename, String name);
+	// Used by importers that already decoded an embedded image (for example a
+	// glTF image stored in a bufferView or data URI).
+	Handle<Texture> add_texture(Texture texture);
 
 	void wait_until_loaded();
 

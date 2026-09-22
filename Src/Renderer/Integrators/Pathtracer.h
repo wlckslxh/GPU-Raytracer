@@ -1,4 +1,5 @@
 #pragma once
+#include <vector>
 #include "Renderer/Integrators/Integrator.h"
 #include "Renderer/Material.h"
 
@@ -234,10 +235,14 @@ struct Pathtracer final : Integrator {
 
 	CUDAMemory::Ptr<int>   ptr_light_triangle_indices;
 	CUDAMemory::Ptr<float> ptr_light_triangle_cumulative_probability;
+	CUDAMemory::Ptr<int>   ptr_light_triangle_mesh_indices;
 
-	CUDAMemory::Ptr<float> ptr_light_mesh_cumulative_probability;
-	CUDAMemory::Ptr<int2>  ptr_light_mesh_triangle_span;
-	CUDAMemory::Ptr<int>   ptr_light_mesh_transform_indices;
+	struct LightTriangleData {
+		int triangle_index;
+		int scene_mesh_index;
+		double weight;
+	};
+	std::vector<LightTriangleData> light_triangle_data;
 
 	// Timing Events
 	CUDAEvent::Desc event_desc_primary;

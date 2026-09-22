@@ -9,11 +9,8 @@ __device__ __constant__ float lights_total_weight;
 
 __device__ __constant__ const int   * light_triangle_indices;
 __device__ __constant__ const float * light_triangle_cumulative_probability;
-
-__device__ __constant__ int           light_mesh_count;
-__device__ __constant__ const float * light_mesh_cumulative_probability;
-__device__ __constant__ const int2  * light_mesh_triangle_span; // First and last index into 'light_mesh_area_cumulative' array
-__device__ __constant__ const int   * light_mesh_transform_indices;
+__device__ __constant__ const int   * light_triangle_mesh_indices;
+__device__ __constant__ int           light_triangle_count;
 
 __device__ inline bool pdf_is_valid(float pdf) {
 	return isfinite(pdf) && pdf > 1e-4f;
@@ -177,14 +174,8 @@ __device__ float3 sample_visible_normals_ggx(float3 omega, float alpha_x, float 
 	return normalize(make_float3(alpha_x * n_h.x, alpha_y * n_h.y, n_h.z));
 }
 
-__device__ int sample_light(float u1, float u2, int & transform_id) {
-	// Pick light emitting Mesh
-	int light_mesh_id = binary_search(light_mesh_cumulative_probability, 0, light_mesh_count - 1, u1);
-	transform_id = light_mesh_transform_indices[light_mesh_id];
-
-	// Pick light emitting Triangle on the Mesh
-	int2 triangle_span = light_mesh_triangle_span[light_mesh_id];
-	int light_triangle_id = binary_search(light_triangle_cumulative_probability, triangle_span.x, triangle_span.y, u2);
-
-	return light_triangle_indices[light_triangle_id];
+__device__ int sample_light(float u, int & transform_id) {
+	int light_index = binary_search(light_triangle_cumulative_probability, 0, light_triangle_count - 1, u);
+	transform_id = light_triangle_mesh_indices[light_index];
+	return light_triangle_indices[light_index];
 }

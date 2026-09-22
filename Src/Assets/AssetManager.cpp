@@ -98,13 +98,19 @@ Handle<MeshData> AssetManager::add_mesh_data(String filename, String bvh_filenam
 }
 
 Handle<MeshData> AssetManager::add_mesh_data(Array<Triangle> triangles) {
+	return add_mesh_data(std::move(triangles), { });
+}
+
+Handle<MeshData> AssetManager::add_mesh_data(Array<Triangle> triangles, Array<int> material_ids) {
+	ASSERT(material_ids.size() == 0 || material_ids.size() == triangles.size());
 	Handle<MeshData> mesh_data_handle = new_mesh_data();
 
-	ThreadPool::submit([this, triangles = std::move(triangles), mesh_data_handle]() mutable {
+	ThreadPool::submit([this, triangles = std::move(triangles), material_ids = std::move(material_ids), mesh_data_handle]() mutable {
 		BVH2 bvh = BVH::create_from_triangles(triangles);
 
 		MeshData mesh_data = { };
 		mesh_data.triangles = std::move(triangles);
+		mesh_data.material_ids = std::move(material_ids);
 		mesh_data.bvh = BVH::create_from_bvh2(std::move(bvh));
 
 		{
@@ -174,6 +180,15 @@ Handle<Texture> AssetManager::add_texture(String filename, String name) {
 		}
 	});
 
+	return texture_handle;
+}
+
+Handle<Texture> AssetManager::add_texture(Texture texture) {
+	Handle<Texture> texture_handle = new_texture();
+	{
+		MutexLock lock(textures_mutex);
+		get_texture(texture_handle) = std::move(texture);
+	}
 	return texture_handle;
 }
 

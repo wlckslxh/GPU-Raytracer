@@ -348,7 +348,7 @@ extern "C" __global__ void kernel_sort(int bounce, int sample_index) {
 	}
 
 	// Get the Material of the Mesh we hit
-	int material_id = mesh_get_material_id(hit.mesh_id);
+	int material_id = triangle_get_material_id(hit.mesh_id, hit.triangle_id);
 	MaterialType material_type = material_get_type(material_id);
 
 	if (material_type == MaterialType::LIGHT) {
@@ -479,7 +479,7 @@ __device__ void next_event_estimation(
 
 	// Pick random Light
 	int light_mesh_id;
-	int light_triangle_id = sample_light(rand_light.x, rand_light.y, light_mesh_id);
+	int light_triangle_id = sample_light(rand_light.x, light_mesh_id);
 
 	// Pick random point on the Light
 	float2 light_uv = sample_triangle(rand_triangle.x, rand_triangle.y);
@@ -509,7 +509,7 @@ __device__ void next_event_estimation(
 	float cos_theta_light = abs_dot(to_light, light_geometric_normal);
 	float cos_theta_hit = dot(to_light, normal);
 
-	int light_material_id = mesh_get_material_id(light_mesh_id);
+	int light_material_id = triangle_get_material_id(light_mesh_id, light_triangle_id);
 	MaterialLight light_material = material_as_light(light_material_id);
 
 	float3 bsdf_value;
@@ -653,7 +653,7 @@ __device__ void shade_material(int bounce, int sample_index, int buffer_size) {
 	if (omega_i.z <= 0.0f) return; // Below hemisphere, reject
 
 	// Initialize BSDF
-	int material_id = mesh_get_material_id(hit.mesh_id);
+	int material_id = triangle_get_material_id(hit.mesh_id, hit.triangle_id);
 
 	BSDF bsdf;
 	bsdf.pixel_index  = pixel_index;

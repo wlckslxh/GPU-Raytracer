@@ -151,6 +151,7 @@ struct Integrator {
 	};
 
 	CUDAMemory::Ptr<CUDATriangle> ptr_triangles;
+	CUDAMemory::Ptr<int>          ptr_triangle_material_ids;
 
 	CUDAMemory::Ptr<BVHNode2>  ptr_bvh_nodes_2;
 	CUDAMemory::Ptr<BVHNode4>  ptr_bvh_nodes_4;
