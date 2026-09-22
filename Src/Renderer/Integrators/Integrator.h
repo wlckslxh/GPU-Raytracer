@@ -158,8 +158,10 @@ struct Integrator {
 	//jichan add
 	CUDAMemory::Ptr<uint64_t>  ptr_bvh_counter;
 	CUDAMemory::Ptr<uint64_t> ptr_triangle_counter;
+	CUDAMemory::Ptr<uint64_t> ptr_mesh_counter;
 	size_t bvh_counter_count = 0;
 	size_t triangle_counter_count = 0;
+	size_t mesh_counter_count = 0;
 	uint64_t bvh_counter_dumped = 0;
 	CUDAMemory::Ptr<int>       ptr_mesh_bvh_root_indices;
 	CUDAMemory::Ptr<int>       ptr_mesh_material_ids;

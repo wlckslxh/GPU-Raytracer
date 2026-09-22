@@ -28,6 +28,7 @@ __device__ __constant__ const BVH8Node * bvh8_nodes;
 //jichan add
 __device__ __constant__ unsigned long long * bvh_counter;
 __device__ __constant__ unsigned long long * triangle_counter;
+__device__ __constant__ unsigned long long * mesh_counter;
 
 __device__ inline unsigned bvh8_node_intersect(
 	const Ray & ray,
@@ -210,6 +211,7 @@ __device__ inline void bvh8_trace(TraversalData * traversal_data, int ray_count,
 					triangle_group.y &= ~(1 << mesh_offset);
 
 					mesh_id = triangle_group.x + mesh_offset;
+					atomicAdd(&mesh_counter[mesh_id], 1ull);
 
 					if (triangle_group.y != 0) {
 						stack_push(shared_stack_bvh8, stack, stack_size, triangle_group);

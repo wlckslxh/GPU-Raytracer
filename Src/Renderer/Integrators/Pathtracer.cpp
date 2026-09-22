@@ -1,5 +1,7 @@
 #include "Pathtracer.h"
 
+#include <cmath>
+
 #include <Imgui/imgui.h>
 
 #include "Core/Allocators/LinearAllocator.h"
@@ -757,6 +759,22 @@ static int get_child_node_index(const BVHNode8& node, int child_slot) {
 	return int(node.base_index_child) + internal_children_before;
 }
 
+static void get_child_aabb(const BVHNode8& node, int child_slot, float bounds[6]) {
+	// e stores IEEE-754 exponent bits for a power-of-two quantization scale.
+	const Vector3 scale(
+		std::ldexp(1.0f, int(node.e[0]) - 127),
+		std::ldexp(1.0f, int(node.e[1]) - 127),
+		std::ldexp(1.0f, int(node.e[2]) - 127)
+	);
+
+	bounds[0] = node.p.x + float(node.quantized_min_x[child_slot]) * scale.x;
+	bounds[1] = node.p.y + float(node.quantized_min_y[child_slot]) * scale.y;
+	bounds[2] = node.p.z + float(node.quantized_min_z[child_slot]) * scale.z;
+	bounds[3] = node.p.x + float(node.quantized_max_x[child_slot]) * scale.x;
+	bounds[4] = node.p.y + float(node.quantized_max_y[child_slot]) * scale.y;
+	bounds[5] = node.p.z + float(node.quantized_max_z[child_slot]) * scale.z;
+}
+
 static const char* get_node_type(
 	size_t node_index,
 	size_t tlas_node_count,
@@ -852,14 +870,24 @@ void Pathtracer::render() {
 
 		Array<uint64_t> host_triangle_counters(triangle_counter_count);
 		CUDAMemory::memcpy<uint64_t>(host_triangle_counters.data(), ptr_triangle_counter, triangle_counter_count);
+
+		Array<uint64_t> host_mesh_counters(mesh_counter_count);
+		CUDAMemory::memcpy<uint64_t>(host_mesh_counters.data(), ptr_mesh_counter, mesh_counter_count);
 		
 		FILE* file = nullptr;
 		fopen_s(&file, "bvh8.csv", "wb");
 		if (file) {
-			fprintf(file,
-				"node_index,node_type,node_count,"
-				"child_slot,child_kind,target_index,target_count\n"
-			);
+			fprintf(file, "node_index,node_type,node_count");
+			for (int child_slot = 0; child_slot < 8; child_slot++) {
+				fprintf(file,
+					",child_index_%d,child_count_%d,"
+					"child_min_x_%d,child_min_y_%d,child_min_z_%d,"
+					"child_max_x_%d,child_max_y_%d,child_max_z_%d",
+					child_slot, child_slot,
+					child_slot, child_slot, child_slot,
+					child_slot, child_slot, child_slot);
+			}
+			fprintf(file, "\n");
 
 			for (size_t i = 0; i < bvh_counter_count; i++) {
 				const BVHNode8& node = host_nodes[i];
@@ -870,22 +898,27 @@ void Pathtracer::render() {
 					continue;
 				}
 
+				int child_indices[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+				uint64_t child_counts[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+				float child_bounds[8][6];
+				for (int child_slot = 0; child_slot < 8; child_slot++) {
+					for (int component = 0; component < 6; component++) child_bounds[child_slot][component] = NAN;
+				}
+
 				for (int child_slot = 0; child_slot < 8; child_slot++) {
 					const unsigned meta = unsigned(node.meta[child_slot]);
 
 					if (meta == 0) {
 						continue;
 					}
+					get_child_aabb(node, child_slot, child_bounds[child_slot]);
 					
 					const bool is_internal = (unsigned(node.imask) & (1u << child_slot)) != 0;
 
 					if (is_internal) {
 						const int child_node_index = get_child_node_index(node, child_slot);
-						fprintf(file, "%zu,%s,%llu,%d,internal,%d,%llu\n",
-							i, node_type,
-							static_cast<unsigned long long>(host_counters[i]),
-							child_slot, child_node_index,
-							static_cast<unsigned long long>(host_counters[child_node_index]));
+						child_indices[child_slot] = child_node_index;
+						child_counts[child_slot] = host_counters[child_node_index];
 					}
 					else {
 						// meta 하위 5 bit는 이 node primitive group 내 시작 offset,
@@ -897,22 +930,32 @@ void Pathtracer::render() {
 							primitive_count++;
 						}
 
-						const bool is_tlas = strcmp(node_type, "TLAS") == 0;
-						for (int primitive_offset = 0; primitive_offset < primitive_count; primitive_offset++) {
-							const int target_index = first_primitive + primitive_offset;
-							const char * child_kind = is_tlas ? "mesh" : "triangle";
-							const uint64_t target_count = is_tlas ? 0ull : host_triangle_counters[target_index];
-
-							fprintf(file, "%zu,%s,%llu,%d,%s,%d,%llu\n",
-								i, node_type,
-								static_cast<unsigned long long>(host_counters[i]),
-								child_slot, child_kind, target_index,
-								static_cast<unsigned long long>(target_count));
+						// A leaf child has no physical BVH8 node. Record its first primitive
+						// as a negative index; for a BLAS leaf, sum all triangle test counters.
+						child_indices[child_slot] = -(first_primitive + 1);
+						if (strcmp(node_type, "BLAS") == 0) {
+							for (int primitive_offset = 0; primitive_offset < primitive_count; primitive_offset++) {
+								child_counts[child_slot] += host_triangle_counters[first_primitive + primitive_offset];
+							}
+						} else {
+							for (int primitive_offset = 0; primitive_offset < primitive_count; primitive_offset++) {
+								child_counts[child_slot] += host_mesh_counters[first_primitive + primitive_offset];
+							}
 						}
 					}
 				}
+
+				fprintf(file, "%zu,%s,%llu", i, node_type, static_cast<unsigned long long>(host_counters[i]));
+				for (int child_slot = 0; child_slot < 8; child_slot++) {
+					const float * bounds = child_bounds[child_slot];
+					fprintf(file, ",%d,%llu,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g",
+						child_indices[child_slot], static_cast<unsigned long long>(child_counts[child_slot]),
+						bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]);
+				}
+				fprintf(file, "\n");
 			}
 			fclose(file);
+			std::printf("Successfully wrote BVH meatadata to BVH8.csv");
 		}
 	}
 	bvh_counter_dumped++;
