@@ -420,27 +420,37 @@ void Integrator::init_geometry() {
 			}
 
 			ptr_bvh_nodes_8 = CUDAMemory::malloc<BVHNode8>(aggregated_bvh_nodes);
-			ptr_bvh_counter = CUDAMemory::malloc<uint64_t>(aggregated_bvh_node_count); //jichan add
-			ptr_triangle_counter = CUDAMemory::malloc<uint64_t>(aggregated_index_count);
-			ptr_mesh_counter = CUDAMemory::malloc<uint64_t>(scene.meshes.size());
-			bvh_counter_count = aggregated_bvh_node_count;
-			triangle_counter_count = aggregated_index_count;
-			mesh_counter_count = scene.meshes.size();
-
 			cuda_module.get_global("bvh8_nodes").set_value(ptr_bvh_nodes_8);
-			cuda_module.get_global("bvh_counter").set_value(ptr_bvh_counter);
-			cuda_module.get_global("triangle_counter").set_value(ptr_triangle_counter);
-			cuda_module.get_global("mesh_counter").set_value(ptr_mesh_counter);
-
-			CUDAMemory::memset_async(ptr_bvh_counter, 0, aggregated_bvh_node_count, memory_stream);
-			CUDAMemory::memset_async(ptr_triangle_counter, 0, aggregated_index_count, memory_stream);
-			CUDAMemory::memset_async(ptr_mesh_counter, 0, scene.meshes.size(), memory_stream);
 
 			tlas           = make_owned<BVH8>(PinnedAllocator::instance());
 			tlas_converter = make_owned<BVH8Converter>(static_cast<BVH8 &>(*tlas.get()), tlas_raw);
 			break;
 		}
 	}
+
+	//jichan add
+	//set bvh node counters
+	if (counter_mode) {
+		ptr_bvh_counter = CUDAMemory::malloc<uint64_t>(aggregated_bvh_node_count);
+		ptr_triangle_counter = CUDAMemory::malloc<uint64_t>(aggregated_index_count);
+		ptr_mesh_counter = CUDAMemory::malloc<uint64_t>(scene.meshes.size());
+
+		bvh_counter_count = aggregated_bvh_node_count;
+		triangle_counter_count = aggregated_index_count;
+		mesh_counter_count = scene.meshes.size();
+
+		cuda_module.get_global("bvh_counter").set_value(ptr_bvh_counter);
+		cuda_module.get_global("triangle_counter").set_value(ptr_triangle_counter);
+		cuda_module.get_global("mesh_counter").set_value(ptr_mesh_counter);
+
+		CUDAMemory::memset_async(ptr_bvh_counter, 0, aggregated_bvh_node_count, memory_stream);
+		CUDAMemory::memset_async(ptr_triangle_counter, 0, aggregated_index_count, memory_stream);
+		CUDAMemory::memset_async(ptr_mesh_counter, 0, scene.meshes.size(), memory_stream);
+	}
+
+	ptr_counter_mode = CUDAMemory::malloc<bool>(1);
+	cuda_module.get_global("counter_mode").set_value(ptr_counter_mode);
+	CUDAMemory::memset_async(ptr_counter_mode, counter_mode, 1, memory_stream);
 }
 
 void Integrator::init_sky() {
@@ -612,9 +622,12 @@ void Integrator::update(float delta, Allocator * frame_allocator) {
 		invalidated_scene = false;
 		build_tlas();
 	}
-	apply_camera_path_set(scene.camera, bvh_counter_dumped);
-
-	invalidated_camera = true;
+	
+	if (counter_mode) {
+		apply_camera_path_set(scene.camera, bvh_counter_dumped);
+		invalidated_camera = true;
+	}
+		
 	scene.camera.update(delta);
 
 	if (scene.camera.moved || invalidated_camera) {

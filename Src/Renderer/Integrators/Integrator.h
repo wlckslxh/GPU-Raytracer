@@ -164,6 +164,8 @@ struct Integrator {
 	size_t triangle_counter_count = 0;
 	size_t mesh_counter_count = 0;
 	uint64_t bvh_counter_dumped = 0;
+	CUDAMemory::Ptr<bool> ptr_counter_mode;
+
 	CUDAMemory::Ptr<int>       ptr_mesh_bvh_root_indices;
 	CUDAMemory::Ptr<int>       ptr_mesh_material_ids;
 	CUDAMemory::Ptr<Matrix3x4> ptr_mesh_transforms;
@@ -204,6 +206,9 @@ struct Integrator {
 
 	AOV aovs[size_t(AOVType::COUNT)];
 	CUDAModule::Global global_aovs;
+
+	//jichan add
+	bool counter_mode = false;
 
 	Integrator(Scene & scene) : scene(scene) {
 		CUDACALL(cuStreamCreate(&memory_stream, CU_STREAM_NON_BLOCKING));

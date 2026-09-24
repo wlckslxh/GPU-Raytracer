@@ -786,106 +786,115 @@ void Pathtracer::render() {
 	}
 
 	//jichan add
-	if (bvh_counter_dumped + 1 == 600ull) {
-		CUDACALL(cuStreamSynchronize(nullptr));
-		
-		Array<uint64_t> host_counters(bvh_counter_count);
-		CUDAMemory::memcpy<uint64_t>(host_counters.data(), ptr_bvh_counter, bvh_counter_count);
+	if (counter_mode) {
+		static uint64_t counter_limit = 200ull;
+		if (bvh_counter_dumped + 1 == counter_limit) {
+			CUDACALL(cuStreamSynchronize(nullptr));
 
-		Array<BVHNode8> host_nodes(bvh_counter_count);
-		CUDAMemory::memcpy<BVHNode8>(host_nodes.data(), ptr_bvh_nodes_8, bvh_counter_count);
+			Array<uint64_t> host_counters(bvh_counter_count);
+			CUDAMemory::memcpy<uint64_t>(host_counters.data(), ptr_bvh_counter, bvh_counter_count);
 
-		Array<uint64_t> host_triangle_counters(triangle_counter_count);
-		CUDAMemory::memcpy<uint64_t>(host_triangle_counters.data(), ptr_triangle_counter, triangle_counter_count);
+			Array<BVHNode8> host_nodes(bvh_counter_count);
+			CUDAMemory::memcpy<BVHNode8>(host_nodes.data(), ptr_bvh_nodes_8, bvh_counter_count);
 
-		Array<uint64_t> host_mesh_counters(mesh_counter_count);
-		CUDAMemory::memcpy<uint64_t>(host_mesh_counters.data(), ptr_mesh_counter, mesh_counter_count);
-		
-		FILE* file = nullptr;
-		fopen_s(&file, "bvh8.csv", "wb");
-		if (file) {
-			fprintf(file, "node_index,node_type,node_count");
-			for (int child_slot = 0; child_slot < 8; child_slot++) {
-				fprintf(file,
-					",child_index_%d,child_count_%d,"
-					"child_min_x_%d,child_min_y_%d,child_min_z_%d,"
-					"child_max_x_%d,child_max_y_%d,child_max_z_%d",
-					child_slot, child_slot,
-					child_slot, child_slot, child_slot,
-					child_slot, child_slot, child_slot);
-			}
-			fprintf(file, "\n");
+			Array<uint64_t> host_triangle_counters(triangle_counter_count);
+			CUDAMemory::memcpy<uint64_t>(host_triangle_counters.data(), ptr_triangle_counter, triangle_counter_count);
 
-			for (size_t i = 0; i < bvh_counter_count; i++) {
-				const BVHNode8& node = host_nodes[i];
+			Array<uint64_t> host_mesh_counters(mesh_counter_count);
+			CUDAMemory::memcpy<uint64_t>(host_mesh_counters.data(), ptr_mesh_counter, mesh_counter_count);
 
-				const char* node_type = get_node_type(i, tlas->node_count(), mesh_data_bvh_offsets,	scene);
-
-				if (strcmp(node_type, "RESERVED") == 0) {
-					continue;
-				}
-
-				int child_indices[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
-				uint64_t child_counts[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
-				float child_bounds[8][6];
+			FILE* file = nullptr;
+			fopen_s(&file, "bvh8.csv", "wb");
+			if (file) {
+				fprintf(file, "node_index,node_type,node_count");
 				for (int child_slot = 0; child_slot < 8; child_slot++) {
-					for (int component = 0; component < 6; component++) child_bounds[child_slot][component] = NAN;
-				}
-
-				for (int child_slot = 0; child_slot < 8; child_slot++) {
-					const unsigned meta = unsigned(node.meta[child_slot]);
-
-					if (meta == 0) {
-						continue;
-					}
-					get_child_aabb(node, child_slot, child_bounds[child_slot]);
-					
-					const bool is_internal = (unsigned(node.imask) & (1u << child_slot)) != 0;
-
-					if (is_internal) {
-						const int child_node_index = get_child_node_index(node, child_slot);
-						child_indices[child_slot] = child_node_index;
-						child_counts[child_slot] = host_counters[child_node_index];
-					}
-					else {
-						// meta 하위 5 bit는 이 node primitive group 내 시작 offset,
-						// 상위 3 bit의 unary mask는 이 child가 보유한 primitive 개수다.
-						const int first_primitive = int(node.base_index_triangle) + int(meta & 0x1f);
-						const unsigned primitive_mask = meta >> 5;
-						int primitive_count = 0;
-						for (unsigned bits = primitive_mask; bits != 0; bits &= bits - 1) {
-							primitive_count++;
-						}
-
-						// A leaf child has no physical BVH8 node. Record its first primitive
-						// as a negative index; for a BLAS leaf, sum all triangle test counters.
-						child_indices[child_slot] = -(first_primitive + 1);
-						if (strcmp(node_type, "BLAS") == 0) {
-							for (int primitive_offset = 0; primitive_offset < primitive_count; primitive_offset++) {
-								child_counts[child_slot] += host_triangle_counters[first_primitive + primitive_offset];
-							}
-						} else {
-							for (int primitive_offset = 0; primitive_offset < primitive_count; primitive_offset++) {
-								child_counts[child_slot] += host_mesh_counters[first_primitive + primitive_offset];
-							}
-						}
-					}
-				}
-
-				fprintf(file, "%zu,%s,%llu", i, node_type, static_cast<unsigned long long>(host_counters[i]));
-				for (int child_slot = 0; child_slot < 8; child_slot++) {
-					const float * bounds = child_bounds[child_slot];
-					fprintf(file, ",%d,%llu,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g",
-						child_indices[child_slot], static_cast<unsigned long long>(child_counts[child_slot]),
-						bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]);
+					fprintf(file,
+						",child_index_%d,child_count_%d,"
+						"child_min_x_%d,child_min_y_%d,child_min_z_%d,"
+						"child_max_x_%d,child_max_y_%d,child_max_z_%d",
+						child_slot, child_slot,
+						child_slot, child_slot, child_slot,
+						child_slot, child_slot, child_slot);
 				}
 				fprintf(file, "\n");
+
+				for (size_t i = 0; i < bvh_counter_count; i++) {
+					const BVHNode8& node = host_nodes[i];
+
+					const char* node_type = get_node_type(i, tlas->node_count(), mesh_data_bvh_offsets, scene);
+
+					if (strcmp(node_type, "RESERVED") == 0) {
+						continue;
+					}
+
+					int child_indices[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+					uint64_t child_counts[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+					float child_bounds[8][6];
+					for (int child_slot = 0; child_slot < 8; child_slot++) {
+						for (int component = 0; component < 6; component++) child_bounds[child_slot][component] = NAN;
+					}
+
+					for (int child_slot = 0; child_slot < 8; child_slot++) {
+						const unsigned meta = unsigned(node.meta[child_slot]);
+
+						if (meta == 0) {
+							continue;
+						}
+						get_child_aabb(node, child_slot, child_bounds[child_slot]);
+
+						const bool is_internal = (unsigned(node.imask) & (1u << child_slot)) != 0;
+
+						if (is_internal) {
+							const int child_node_index = get_child_node_index(node, child_slot);
+							child_indices[child_slot] = child_node_index;
+							child_counts[child_slot] = host_counters[child_node_index];
+						}
+						else {
+							// meta 하위 5 bit는 이 node primitive group 내 시작 offset,
+							// 상위 3 bit의 unary mask는 이 child가 보유한 primitive 개수다.
+							const int first_primitive = int(node.base_index_triangle) + int(meta & 0x1f);
+							const unsigned primitive_mask = meta >> 5;
+							int primitive_count = 0;
+							for (unsigned bits = primitive_mask; bits != 0; bits &= bits - 1) {
+								primitive_count++;
+							}
+
+							// A leaf child has no physical BVH8 node. Record its first primitive
+							// as a negative index; for a BLAS leaf, sum all triangle test counters.
+							child_indices[child_slot] = -(first_primitive + 1);
+							if (strcmp(node_type, "BLAS") == 0) {
+								for (int primitive_offset = 0; primitive_offset < primitive_count; primitive_offset++) {
+									child_counts[child_slot] += host_triangle_counters[first_primitive + primitive_offset];
+								}
+							}
+							else {
+								for (int primitive_offset = 0; primitive_offset < primitive_count; primitive_offset++) {
+									child_counts[child_slot] += host_mesh_counters[first_primitive + primitive_offset];
+								}
+							}
+						}
+					}
+
+					fprintf(file, "%zu,%s,%llu", i, node_type, static_cast<unsigned long long>(host_counters[i]));
+					for (int child_slot = 0; child_slot < 8; child_slot++) {
+						const float* bounds = child_bounds[child_slot];
+						fprintf(file, ",%d,%llu,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g",
+							child_indices[child_slot], static_cast<unsigned long long>(child_counts[child_slot]),
+							bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]);
+					}
+					fprintf(file, "\n");
+				}
+				fclose(file);
+				std::printf("Successfully wrote BVH meatadata to BVH8.csv");
 			}
-			fclose(file);
-			std::printf("Successfully wrote BVH meatadata to BVH8.csv");
+			counter_mode = false;
+			CUDAMemory::memset_async(ptr_counter_mode, counter_mode, 1, memory_stream);
+		}
+		else if (bvh_counter_dumped < counter_limit) {
+			bvh_counter_dumped++;
 		}
 	}
-	bvh_counter_dumped++;
+	
 	
 	if (gpu_config.enable_svgf) {
 		// Temporal reprojection + integration
