@@ -225,6 +225,7 @@
     <ClCompile Include="Src\BVH\BVHOptimizer.cpp" />
     <ClCompile Include="Src\BVH\Converters\BVH8Converter.cpp" />
     <ClCompile Include="Src\BVH\Converters\BVH4Converter.cpp" />
+    <ClCompile Include="Src\BVH\Rebuilders\BVH8RebuildRayDistribution.cpp" />
     <ClCompile Include="Src\Core\Format.cpp" />
     <ClCompile Include="Src\Core\IO.cpp" />
     <ClCompile Include="Src\Core\Mutex.cpp" />
@@ -277,6 +278,7 @@
     <ClInclude Include="Src\BVH\Converters\BVHConverter.h" />
     <ClInclude Include="Src\BVH\Converters\BVH8Converter.h" />
     <ClInclude Include="Src\BVH\Converters\BVH4Converter.h" />
+    <ClInclude Include="Src\BVH\Rebuilders\BVH8RebuildRayDistribution.h" />
     <ClInclude Include="Src\Config.h" />
     <ClInclude Include="Src\Core\Allocators\AlignedAllocator.h" />
     <ClInclude Include="Src\Core\Allocators\Allocator.h" />
