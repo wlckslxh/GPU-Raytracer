@@ -179,12 +179,18 @@ void BVH8RebuildRayDistribution::rebuild() {
 		//if not, merge first and do promotion
 		else {
 			uint64_t counterSum = 0;
+			uint64_t maxCounter = 0;
 			uint64_t minACounter = -1;
 			uint64_t minBCounter = -1;
-			uint8_t minAChild, minBChild;
+			uint8_t minAChild, minBChild, maxChild;
+			//check both min two childs and max single child for merge condition
 			for (int i = 0; i < 8; i++) {
 				const Child& child = workingNode.child[i];
 				if (child.kind == Internal) {
+					if (maxCounter < nodeCounter[child.index + globalNodeOffset]) {
+						maxCounter = nodeCounter[child.index + globalNodeOffset];
+						maxChild = i;
+					}
 					counterSum += nodeCounter[child.index + globalNodeOffset];
 				}
 				if (child.kind == Object) {
@@ -192,6 +198,10 @@ void BVH8RebuildRayDistribution::rebuild() {
 					for (int j = 0; j < child.primitiveCount; j++) {
 						const uint64_t objectVisitCount = objectCounter[globalObjectOffset + child.index + j];
 						curChildCounter += objectVisitCount;
+					}
+					if (maxCounter < curChildCounter) {
+						maxCounter = curChildCounter;
+						maxChild = i;
 					}
 					if (minACounter > curChildCounter) {
 						minACounter = curChildCounter;
@@ -204,18 +214,51 @@ void BVH8RebuildRayDistribution::rebuild() {
 					counterSum += curChildCounter;
 				}
 			}
-			bool doMerge = minAChild + minBChild / counterSum < 0.3;
+			bool doMerge = (((float)(minACounter + minBCounter) / counterSum) < 0.25) && (((float)maxCounter / counterSum) > 0.3);
 
 			if (doMerge) {
+				//merge node를 만들면, child가 둘 뿐이므로 무조건 빈 틈이 생겨 promotion을 진행하는데, 이걸 냅둬도 되나...?
 				WorkingNode8 mergeNode;
+				mergeNode.child[0] = workingNode.child[minAChild];
+				mergeNode.child[1] = workingNode.child[minBChild];
+				if (mergeNode.child[0].kind == Internal) {
+					mergeNode.childCount++;
+					workingNode.childCount--;
+				}
+				else {
+					mergeNode.objectCount++;
+					workingNode.objectCount--;
+				}
+				if (mergeNode.child[1].kind == Internal) {
+					mergeNode.childCount++;
+					workingNode.childCount--;
+				}
+				else {
+					mergeNode.objectCount++;
+					mergeNode.objectCount--;
+				}
+				workingBvh.push_back(mergeNode);
+				AABB mergeAABB = AABB::unify(mergeNode.child[0].aabb, mergeNode.child[1].aabb);
+				workingNode.child[minAChild] = Child{Internal, (uint32_t)workingBvh.size() - 1, 0, mergeAABB};
+				workingNode.child[minBChild] = Child{};
 
 				//merge 이후 promotion 진행
 				promote_most_visited_grandchild(workingNode);
 			}
+
+			for (int slot = 7; slot > -1; slot--) {
+				const Child& child = workingNode.child[slot];
+
+				if (child.kind == Internal) {
+					queue.push_back(child.index);
+				}
+			}
+			workingNode.state = Finished;
 		}
 	}
 }
 
+//rebuild한 working bvh를 원래 bvh 구조로 되돌림
 void BVH8RebuildRayDistribution::resort() {
-
+	
 }
