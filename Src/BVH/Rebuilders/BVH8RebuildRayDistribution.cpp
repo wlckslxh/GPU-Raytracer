@@ -267,6 +267,164 @@ void BVH8RebuildRayDistribution::rebuild() {
 }
 
 //rebuild한 working bvh를 원래 bvh 구조로 되돌림
-void BVH8RebuildRayDistribution::resort() {
+void BVH8RebuildRayDistribution::serialize() {
 	
+	//고려사항
+	//1. internal child 연속 배치
+	//2. internal child meta/imask 재생성
+	//3. object child도 연속 배치
+	//4. AABB는 bottom-up으로 다시 계산
+	//5. 여기 코드는 기존 bvh를 dfs 방식으로 child들을 만들어서, 이 방법을 그대로 따라가기로 결정
+	serializePendingNode startNode = { 0, 0 };
+	serializeQueue.clear();
+	serializeQueue.push_back(startNode);
+
+	newBvh.nodes.clear();
+	newBvh.indices.clear();
+	newBvh.nodes.emplace_back();
+
+	while (serializeQueue.size()) {
+		serializePendingNode pending = serializeQueue.back();
+		serializeQueue.pop_back();
+		
+		const WorkingNode8& workingNode = workingBvh[pending.workingIndex];
+		
+		BVHNode8 outputNode = {};
+		
+		//AABB 계산
+		AABB nodeAabb = AABB::create_empty();
+		uint32_t activeCount = 0;
+		uint32_t activeChild[8] = {};
+		for (int i = 0; i < 8; i++) {
+			if (workingNode.child[i].kind != Empty) {
+				nodeAabb.expand(workingNode.child[i].aabb);
+				activeChild[activeCount++] = i;
+			}
+		}
+
+		outputNode.p = nodeAabb.min;
+
+		//exponent 계산
+		constexpr int Nq = 8;
+		constexpr float denom = 1.0f / 255.0f;
+
+		Vector3 e(exp2f(ceilf(log2f((nodeAabb.max.x - nodeAabb.min.x) * denom))),
+			exp2f(ceilf(log2f((nodeAabb.max.y - nodeAabb.min.y) * denom))),
+			exp2f(ceilf(log2f((nodeAabb.max.z - nodeAabb.min.z) * denom))));
+
+		Vector3 one_over_e(1.0f / e.x, 1.0f / e.y, 1.0f / e.z);
+
+		unsigned u_ex = Util::bit_cast<unsigned>(e.x);
+		unsigned u_ey = Util::bit_cast<unsigned>(e.y);
+		unsigned u_ez = Util::bit_cast<unsigned>(e.z);
+
+		outputNode.e[0] = u_ex >> 23;
+		outputNode.e[1] = u_ey >> 23;
+		outputNode.e[2] = u_ez >> 23;
+
+		//internal child node 구성 및 enqueue
+		outputNode.base_index_child = uint32_t(newBvh.nodes.size());
+
+		for (int i = 0; i < workingNode.childCount; i++) {
+			//뒤에서 자리 잡아 줄 internal node를 미리 예약 함
+			newBvh.nodes.emplace_back();
+		}
+		//object child node 구성
+		outputNode.base_index_triangle = uint32_t(newBvh.indices.size());
+
+		//이 코드에서 사용하는 ordering에 기반하여 child reorder
+		Vector3 p = nodeAabb.get_center();
+
+		float cost[8][8] = {};
+
+		//현재는 정작 비어있는 노드를 읽고, 차 있는 노드를 안 읽을 가능성 높음
+		for (int c = 0; c < activeCount; c++) {
+			uint32_t index = activeChild[c];
+			for (int s = 0; s < 8; s++) {
+				Vector3 direction((s & 0b100) ? -1.0f : 1.0f,
+					(s & 0b010) ? -1.0f : 1.0f,
+					(s & 0b001) ? -1.0f : 1.0f);
+
+				cost[c][s] = Vector3::dot(workingNode.child[index].aabb.get_center() - p, direction);
+			}
+		}
+
+		int assignment[8] = { INVALID, INVALID, INVALID, INVALID, INVALID, INVALID, INVALID, INVALID };
+		bool slot_filled[8] = { };
+
+		while (true) {
+			float min_cost = INFINITY;
+			int min_slot = INVALID;
+			int min_index = INVALID;
+
+			for (int c = 0; c < activeCount; c++) {
+				if (assignment[c] == INVALID) {
+					for (int s = 0; s < 8; s++) {
+						if (!slot_filled[s] && cost[c][s] < min_cost) {
+							min_cost = cost[c][s];
+
+							min_slot = s;
+							min_index = c;
+						}
+					}
+				}
+			}
+
+			if (min_slot == INVALID) break;
+			slot_filled[min_slot] = true;
+			assignment[min_index] = min_slot;
+		}
+
+		uint32_t reorderedChild[8] = { INVALID, INVALID, INVALID, INVALID, INVALID, INVALID, INVALID, INVALID };
+		for (int i = 0; i < activeCount; i++) {
+			reorderedChild[assignment[i]] = activeChild[i];
+		}
+
+		serializePendingNode internalPending[8];
+		int serializePendingCount = 0;
+		uint32_t internalOffset = 0;
+		uint32_t objectOffset = 0;
+
+		for (int i = 0; i < 8; i++) {
+			uint32_t source = reorderedChild[i];
+			if (source == INVALID) continue;
+
+			const Child& child = workingNode.child[source];
+			if (child.kind == Empty) continue;
+
+			//internal child node 양자화
+			outputNode.quantized_min_x[i] = byte(floorf((child.aabb.min.x - outputNode.p.x) * one_over_e.x));
+			outputNode.quantized_min_y[i] = byte(floorf((child.aabb.min.y - outputNode.p.y) * one_over_e.y));
+			outputNode.quantized_min_z[i] = byte(floorf((child.aabb.min.z - outputNode.p.z) * one_over_e.z));
+
+			outputNode.quantized_max_x[i] = byte(ceilf((child.aabb.max.x - outputNode.p.x) * one_over_e.x));
+			outputNode.quantized_max_y[i] = byte(ceilf((child.aabb.max.y - outputNode.p.y) * one_over_e.y));
+			outputNode.quantized_max_z[i] = byte(ceilf((child.aabb.max.z - outputNode.p.z) * one_over_e.z));
+
+			if (child.kind == Internal) {
+				uint32_t childOutputIndex = outputNode.base_index_child + internalOffset;
+				outputNode.imask |= 1u << i;
+				outputNode.meta[i] = uint8_t((i + 24) | 0x20);
+				internalPending[serializePendingCount++] = { child.index, childOutputIndex };
+				internalOffset++;
+			}
+			else if (child.kind == Object) {
+				uint32_t objectCount = child.primitiveCount;
+				uint32_t unaryCount = ((1u << objectCount) - 1u) << 5;
+				outputNode.meta[i] = uint8_t(objectOffset | unaryCount);
+
+				for (int j = 0; j < objectCount; j++) {
+					newBvh.indices.push_back(oldBvh.indices[child.index + j]);
+				}
+				objectOffset += objectCount;
+			}
+		}
+
+		//실제 위치에 bvh8 node 할당
+		newBvh.nodes[pending.outputIndex] = outputNode;
+
+		for (int i = serializePendingCount - 1; i >= 0; i--) {
+			serializeQueue.push_back(internalPending[i]);
+		}
+	}
 }

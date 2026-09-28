@@ -38,6 +38,11 @@ struct WorkingNode8 {
 	byte state = Unvisited;
 };
 
+struct serializePendingNode {
+	uint32_t workingIndex;
+	uint32_t outputIndex;
+};
+
 struct BVH8RebuildRayDistribution {
 	const BVH8& oldBvh;
 	const Array<uint64_t>& nodeCounter;
@@ -49,6 +54,7 @@ struct BVH8RebuildRayDistribution {
 	Array<uint32_t> queue;
 	uint32_t globalNodeOffset;
 	uint32_t globalObjectOffset;
+	Array<serializePendingNode> serializeQueue;
 
 	BVH8RebuildRayDistribution(const BVH8& oldBvh, const Array<uint64_t>& nodeCounter, const Array<uint64_t>& objectCounter, BVH8& newBvh, uint32_t globalNodeOffset, uint32_t globalObjectOffset, bool is_tlas) : oldBvh(oldBvh), nodeCounter(nodeCounter), objectCounter(objectCounter), newBvh(newBvh), globalNodeOffset(globalNodeOffset), globalObjectOffset(globalObjectOffset), is_tlas(is_tlas) {	
 		initializeWorkingBVH();
@@ -59,5 +65,5 @@ struct BVH8RebuildRayDistribution {
 	void promote_most_visited_grandchild(WorkingNode8& workingNode);
 	void collapse();
 	void rebuild();
-	void resort();
+	void serialize();
 };
