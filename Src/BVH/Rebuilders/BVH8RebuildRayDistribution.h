@@ -26,6 +26,7 @@ struct Child {
 	ChilKind kind = Empty;
 	uint32_t index = INVALID_NODE; // internal: local BVH node, object: first local primitive
 	uint8_t primitiveCount = 0; //object일 때만 활성화, 보통 1~3
+	uint64_t visitCount = 0;
 	AABB aabb;
 };
 

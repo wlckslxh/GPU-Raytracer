@@ -45,12 +45,18 @@ void BVH8RebuildRayDistribution::initializeWorkingBVH() {
 			if (oldNode.imask & (1u << slot)) {
 				child.kind = Internal;
 				child.index = oldNode.base_index_child + internalChildrenBefore;
+				ASSERT(globalNodeOffset + child.index < nodeCounter.size());
+				child.visitCount = nodeCounter[globalNodeOffset + child.index];
 				++internalChildrenBefore;
 				++newNode.childCount;
 			} else {
 				child.kind = Object;
 				child.index = oldNode.base_index_triangle + (unsigned(meta) & 0x1f);
 				child.primitiveCount = count_leaf_primitives(meta);
+				for (uint32_t primitive = 0; primitive < child.primitiveCount; ++primitive) {
+					ASSERT(globalObjectOffset + child.index + primitive < objectCounter.size());
+					child.visitCount += objectCounter[globalObjectOffset + child.index + primitive];
+				}
 				++newNode.objectCount;
 			}
 		}
@@ -68,45 +74,33 @@ void BVH8RebuildRayDistribution::collapse() {
 
 void BVH8RebuildRayDistribution::promote_most_visited_grandchild(WorkingNode8& workingNode) {
 	uint64_t maxCounter = 0;
-	uint8_t maxChild;
+	uint8_t maxChild = UINT8_MAX;
 	//child8 중 누가 ray 비중이 제일 큰지 탐색
 	for (int i = 0; i < 8; i++) {
 		const Child& child = workingNode.child[i];
-		if (child.kind == Internal && maxCounter < nodeCounter[child.index + globalNodeOffset]) {
-			maxCounter = nodeCounter[child.index + globalNodeOffset];
+		if (child.kind == Internal && (maxChild == UINT8_MAX || maxCounter < child.visitCount)) {
+			maxCounter = child.visitCount;
 			maxChild = i;
 		}
 	}
+	ASSERT(maxChild != UINT8_MAX);
 
 	WorkingNode8& candidateNode = workingBvh[workingNode.child[maxChild].index];
 	uint64_t candidateCountSum = 0;
 	uint64_t candidateMaxCounter = 0;
-	uint8_t candidateMaxChild;
+	uint8_t candidateMaxChild = UINT8_MAX;
 	//ray 비중이 제일 큰 child에서, ray 비중이 제일 큰 child 탐색
 	for (int i = 0; i < 8; i++) {
 		const Child& child = candidateNode.child[i];
 		if (child.kind == Empty) continue;
 		//aabb child node와 object child node 분리해서 counter 셀 필요 있음
-		if (child.kind == Internal) {
-			const uint64_t childCounter = nodeCounter[child.index + globalNodeOffset];
-			candidateCountSum += childCounter;
-			if (candidateMaxCounter < childCounter) {
-				candidateMaxCounter = childCounter;
-				candidateMaxChild = i;
-			}
-		} else {
-			uint64_t curChildCounter = 0;
-			for (int j = 0; j < child.primitiveCount; j++) {
-				const uint64_t objectVisitCount = objectCounter[globalObjectOffset + child.index + j];
-				candidateCountSum += objectVisitCount;
-				curChildCounter += objectVisitCount;
-			}
-			if (candidateMaxCounter < curChildCounter) {
-				candidateMaxCounter = curChildCounter;
-				candidateMaxChild = i;
-			}
+		candidateCountSum += child.visitCount;
+		if (candidateMaxChild == UINT8_MAX || candidateMaxCounter < child.visitCount) {
+			candidateMaxCounter = child.visitCount;
+			candidateMaxChild = i;
 		}
 	}
+	ASSERT(candidateMaxChild != UINT8_MAX);
 	//해당 grandchild를 위로 올리면 현 child의 aabb가 얼마나 줄어드는지 계산하여 올리기
 	//일단 지금은 aabb 따로 고려 안 하고 ray 비중만 갖고 무조건 올리는걸로 실험
 	AABB candidateAABB = AABB::create_empty();
@@ -134,7 +128,8 @@ void BVH8RebuildRayDistribution::promote_most_visited_grandchild(WorkingNode8& w
 		candidateNode.child[candidateMaxChild].kind = Empty;
 		candidateNode.child[candidateMaxChild].index = INVALID_NODE;
 		candidateNode.child[candidateMaxChild].primitiveCount = 0;
-		candidateNode.child[candidateMaxChild].aabb = candidateAABB;
+		workingNode.child[maxChild].aabb = candidateAABB;
+		candidateNode.child[candidateMaxChild].aabb = AABB::create_empty();
 		break;
 	}
 }
@@ -178,43 +173,48 @@ void BVH8RebuildRayDistribution::rebuild() {
 		}
 		//if not, merge first and do promotion
 		else {
-			uint64_t counterSum = 0;
-			uint64_t maxCounter = 0;
-			uint64_t minACounter = -1;
-			uint64_t minBCounter = -1;
-			uint8_t minAChild, minBChild, maxChild;
+			uint64_t counterSum = 0, maxCounter = 0, minACounter = -1, minBCounter = -1;
+			uint8_t minAChild = 0, minBChild = 0, maxChild = 0;
 			//check both min two childs and max single child for merge condition
 			for (int i = 0; i < 8; i++) {
 				const Child& child = workingNode.child[i];
 				if (child.kind == Internal) {
-					if (maxCounter < nodeCounter[child.index + globalNodeOffset]) {
-						maxCounter = nodeCounter[child.index + globalNodeOffset];
+					if (maxCounter < child.visitCount) {
+						maxCounter = child.visitCount;
 						maxChild = i;
 					}
-					counterSum += nodeCounter[child.index + globalNodeOffset];
+					if (minACounter > child.visitCount) {
+						minBCounter = minACounter;
+						minACounter = child.visitCount;
+						minBChild = minAChild;
+						minAChild = i;
+					}
+					else if (minBCounter > child.visitCount) {
+						minBCounter = child.visitCount;
+						minBChild = i;
+					}
+					counterSum += child.visitCount;
 				}
 				if (child.kind == Object) {
-					uint64_t curChildCounter = 0;
-					for (int j = 0; j < child.primitiveCount; j++) {
-						const uint64_t objectVisitCount = objectCounter[globalObjectOffset + child.index + j];
-						curChildCounter += objectVisitCount;
-					}
+					const uint64_t curChildCounter = child.visitCount;
 					if (maxCounter < curChildCounter) {
 						maxCounter = curChildCounter;
 						maxChild = i;
 					}
 					if (minACounter > curChildCounter) {
+						minBCounter = minACounter;
 						minACounter = curChildCounter;
+						minBChild = minAChild;
 						minAChild = i;
 					}
-					else if (minBCounter > nodeCounter[child.index + globalObjectOffset]) {
+					else if (minBCounter > curChildCounter) {
 						minBCounter = curChildCounter;
 						minBChild = i;
 					}
 					counterSum += curChildCounter;
 				}
 			}
-			bool doMerge = (((float)(minACounter + minBCounter) / counterSum) < 0.25) && (((float)maxCounter / counterSum) > 0.3);
+			bool doMerge = counterSum != 0 && (((float)(minACounter + minBCounter) / counterSum) < 0.25) && (((float)maxCounter / counterSum) > 0.3);
 
 			if (doMerge) {
 				//merge node를 만들면, child가 둘 뿐이므로 무조건 빈 틈이 생겨 promotion을 진행하는데, 이걸 냅둬도 되나...?
@@ -235,25 +235,33 @@ void BVH8RebuildRayDistribution::rebuild() {
 				}
 				else {
 					mergeNode.objectCount++;
-					mergeNode.objectCount--;
+					workingNode.objectCount--;
 				}
-				workingBvh.push_back(mergeNode);
 				AABB mergeAABB = AABB::unify(mergeNode.child[0].aabb, mergeNode.child[1].aabb);
-				workingNode.child[minAChild] = Child{Internal, (uint32_t)workingBvh.size() - 1, 0, mergeAABB};
-				workingNode.child[minBChild] = Child{};
+				const uint64_t mergeVisitCount = mergeNode.child[0].visitCount + mergeNode.child[1].visitCount;
+				mergeNode.estimatedVisitCount = mergeVisitCount;
+				const uint32_t mergeNodeIndex = uint32_t(workingBvh.size());
+				workingBvh.push_back(mergeNode);
+
+				WorkingNode8& updatedWorkingNode = workingBvh[workingIndex];
+				updatedWorkingNode.child[minAChild] = Child{Internal, mergeNodeIndex, 0, mergeVisitCount, mergeAABB};
+				updatedWorkingNode.child[minBChild] = Child{};
+				updatedWorkingNode.child[minBChild].aabb = AABB::create_empty();
+				updatedWorkingNode.childCount++;
 
 				//merge 이후 promotion 진행
-				promote_most_visited_grandchild(workingNode);
+				promote_most_visited_grandchild(updatedWorkingNode);
 			}
 
+			WorkingNode8& updatedWorkingNode = workingBvh[workingIndex];
 			for (int slot = 7; slot > -1; slot--) {
-				const Child& child = workingNode.child[slot];
+				const Child& child = updatedWorkingNode.child[slot];
 
 				if (child.kind == Internal) {
 					queue.push_back(child.index);
 				}
 			}
-			workingNode.state = Finished;
+			updatedWorkingNode.state = Finished;
 		}
 	}
 }
