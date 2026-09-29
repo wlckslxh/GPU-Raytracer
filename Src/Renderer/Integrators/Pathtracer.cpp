@@ -787,7 +787,6 @@ void Pathtracer::render() {
 
 	//jichan add
 	if (counter_mode) {
-		static uint64_t counter_limit = 200ull;
 		if (bvh_counter_dumped + 1 == counter_limit) {
 			CUDACALL(cuStreamSynchronize(nullptr));
 

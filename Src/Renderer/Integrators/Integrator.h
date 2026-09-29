@@ -209,6 +209,7 @@ struct Integrator {
 
 	//jichan add
 	bool counter_mode = false;
+	uint64_t counter_limit = 200ull;
 
 	Integrator(Scene & scene) : scene(scene) {
 		CUDACALL(cuStreamCreate(&memory_stream, CU_STREAM_NON_BLOCKING));
