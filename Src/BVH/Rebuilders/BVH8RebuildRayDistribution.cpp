@@ -301,6 +301,7 @@ void BVH8RebuildRayDistribution::serialize() {
 				activeChild[activeCount++] = i;
 			}
 		}
+		ASSERT(!nodeAabb.is_valid());
 
 		outputNode.p = nodeAabb.min;
 
@@ -349,7 +350,7 @@ void BVH8RebuildRayDistribution::serialize() {
 			}
 		}
 
-		int assignment[8] = { INVALID, INVALID, INVALID, INVALID, INVALID, INVALID, INVALID, INVALID };
+		uint32_t assignment[8] = { INVALID_NODE, INVALID_NODE, INVALID_NODE, INVALID_NODE, INVALID_NODE, INVALID_NODE, INVALID_NODE, INVALID_NODE };
 		bool slot_filled[8] = { };
 
 		while (true) {
@@ -358,7 +359,7 @@ void BVH8RebuildRayDistribution::serialize() {
 			int min_index = INVALID;
 
 			for (int c = 0; c < activeCount; c++) {
-				if (assignment[c] == INVALID) {
+				if (assignment[c] == INVALID_NODE) {
 					for (int s = 0; s < 8; s++) {
 						if (!slot_filled[s] && cost[c][s] < min_cost) {
 							min_cost = cost[c][s];
@@ -375,7 +376,7 @@ void BVH8RebuildRayDistribution::serialize() {
 			assignment[min_index] = min_slot;
 		}
 
-		uint32_t reorderedChild[8] = { INVALID, INVALID, INVALID, INVALID, INVALID, INVALID, INVALID, INVALID };
+		uint32_t reorderedChild[8] = { INVALID_NODE, INVALID_NODE, INVALID_NODE, INVALID_NODE, INVALID_NODE, INVALID_NODE, INVALID_NODE, INVALID_NODE };
 		for (int i = 0; i < activeCount; i++) {
 			reorderedChild[assignment[i]] = activeChild[i];
 		}
@@ -387,7 +388,7 @@ void BVH8RebuildRayDistribution::serialize() {
 
 		for (int i = 0; i < 8; i++) {
 			uint32_t source = reorderedChild[i];
-			if (source == INVALID) continue;
+			if (source == INVALID_NODE) continue;
 
 			const Child& child = workingNode.child[source];
 			if (child.kind == Empty) continue;
@@ -419,6 +420,7 @@ void BVH8RebuildRayDistribution::serialize() {
 				objectOffset += objectCount;
 			}
 		}
+		ASSERT(objectOffset <= 24);
 
 		//실제 위치에 bvh8 node 할당
 		newBvh.nodes[pending.outputIndex] = outputNode;
@@ -427,4 +429,7 @@ void BVH8RebuildRayDistribution::serialize() {
 			serializeQueue.push_back(internalPending[i]);
 		}
 	}
+
+	//최종 indice 보존 검사
+	ASSERT(newBvh.indices.size() == oldBvh.indices.size());
 }
