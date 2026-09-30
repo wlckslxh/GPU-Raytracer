@@ -787,7 +787,7 @@ void Pathtracer::render() {
 
 	//jichan add
 	if (counter_mode) {
-		if (bvh_counter_dumped + 1 == counter_limit) {
+		if (bvh_counter_dumped + 1 == counter_limit && dump_bvh_counter) {
 			CUDACALL(cuStreamSynchronize(nullptr));
 
 			Array<uint64_t> host_counters(bvh_counter_count);

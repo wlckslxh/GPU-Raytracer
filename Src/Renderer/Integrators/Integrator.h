@@ -165,6 +165,8 @@ struct Integrator {
 	size_t mesh_counter_count = 0;
 	uint64_t bvh_counter_dumped = 0;
 	CUDAMemory::Ptr<bool> ptr_counter_mode;
+	bool dump_bvh_counter = false;
+	Array<int> mesh_data_index_offsets;
 
 	CUDAMemory::Ptr<int>       ptr_mesh_bvh_root_indices;
 	CUDAMemory::Ptr<int>       ptr_mesh_material_ids;
