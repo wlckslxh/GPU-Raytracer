@@ -168,7 +168,6 @@ struct Integrator {
 	size_t mesh_counter_count = 0;
 	uint64_t bvh_counter_dumped = 0;
 	CUDAMemory::Ptr<bool> ptr_counter_mode;
-	bool dump_bvh_counter = false;
 	Array<int> mesh_data_index_offsets;
 
 	CUDAMemory::Ptr<int>       ptr_mesh_bvh_root_indices;
@@ -215,6 +214,7 @@ struct Integrator {
 	//jichan add
 	bool counter_mode = false;
 	uint64_t counter_limit = 200ull;
+	bool dump_bvh_counter = false;
 
 	Integrator(Scene & scene) : scene(scene) {
 		CUDACALL(cuStreamCreate(&memory_stream, CU_STREAM_NON_BLOCKING));

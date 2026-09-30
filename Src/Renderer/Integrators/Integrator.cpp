@@ -849,4 +849,6 @@ void Integrator::rebuild_bvh8_from_counters() {
 	CUDAMemory::memcpy_async(ptr_mesh_transforms, pinned_mesh_transforms, scene.meshes.size(), memory_stream);
 	CUDAMemory::memcpy_async(ptr_mesh_transforms_inv, pinned_mesh_transforms_inv, scene.meshes.size(), memory_stream);
 	CUDAMemory::memcpy_async(ptr_mesh_transforms_prev, pinned_mesh_transforms_prev, scene.meshes.size(), memory_stream);
+
+	printf("Rebuilding bvh with ray distribution has been finished.\n");
 }
