@@ -301,7 +301,7 @@ void BVH8RebuildRayDistribution::serialize() {
 				activeChild[activeCount++] = i;
 			}
 		}
-		ASSERT(!nodeAabb.is_valid());
+		ASSERT(nodeAabb.is_valid());
 
 		outputNode.p = nodeAabb.min;
 
