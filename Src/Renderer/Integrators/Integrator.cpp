@@ -248,7 +248,8 @@ void Integrator::init_geometry() {
 	mesh_data_bvh_offsets     .resize(mesh_data_count);
 	mesh_data_triangle_offsets.resize(mesh_data_count);
 
-	Array<int> mesh_data_index_offsets(mesh_data_count);
+	mesh_data_index_offsets.clear();
+	mesh_data_index_offsets.resize(mesh_data_count);
 
 	size_t aggregated_bvh_node_count = 2 * scene.meshes.size(); // Reserve 2 times Mesh count for TLAS
 	size_t aggregated_triangle_count = 0;
@@ -704,4 +705,148 @@ void Integrator::update(float delta, Allocator * frame_allocator) {
 		sample_index++;
 	}
 
+}
+
+void Integrator::rebuild_bvh8_from_counters() {
+	//get counters
+	Array<uint64_t> host_counters(bvh_counter_count);
+	CUDAMemory::memcpy<uint64_t>(host_counters.data(), ptr_bvh_counter, bvh_counter_count);
+
+	Array<uint64_t> host_triangle_counters(triangle_counter_count);
+	CUDAMemory::memcpy<uint64_t>(host_triangle_counters.data(), ptr_triangle_counter, triangle_counter_count);
+
+	Array<uint64_t> host_mesh_counters(mesh_counter_count);
+	CUDAMemory::memcpy<uint64_t>(host_mesh_counters.data(), ptr_mesh_counter, mesh_counter_count);
+	
+	//rebuild tlas
+	const BVH8& oldTlas = *static_cast<const BVH8*>(tlas.get());
+	OwnPtr<BVH8> newTlas = make_owned<BVH8>(PinnedAllocator::instance());
+	BVH8RebuildRayDistribution rebuilder(oldTlas, host_counters, host_mesh_counters, *newTlas.get(), 0, 0, true);
+
+	rebuilder.rebuild();
+	rebuilder.serialize();
+
+	tlas = std::move(newTlas);
+
+	//rebuild blases
+	for (int i = 0; i < scene.asset_manager.mesh_datas.size(); i++) {
+		MeshData& meshData = scene.asset_manager.mesh_datas[i];
+		
+		const BVH8& oldBlas = *static_cast<const BVH8*>(meshData.bvh.get());
+		OwnPtr<BVH8> newBlas = make_owned<BVH8>(PinnedAllocator::instance());
+		//의미상 triangle offset 대신 gpu packed triangle offset인 init_geometry에서 사용한 mesh_data_index_offset을 쓰는게 맞다고 함
+		BVH8RebuildRayDistribution rebuilder(oldBlas, host_counters, host_triangle_counters, *newBlas.get(), mesh_data_bvh_offsets[i], mesh_data_index_offsets[i], false);
+
+		rebuilder.rebuild();
+		rebuilder.serialize();
+
+		meshData.bvh = std::move(newBlas);
+	}
+
+	//mesh도 재조정 필요
+	size_t mesh_data_count = scene.asset_manager.mesh_datas.size();
+	mesh_data_bvh_offsets.clear();
+	mesh_data_triangle_offsets.clear();
+	mesh_data_bvh_offsets.resize(mesh_data_count);
+	mesh_data_triangle_offsets.resize(mesh_data_count);
+
+	Array<int> rebuild_mesh_data_index_offsets(mesh_data_count);
+	size_t aggregated_bvh_node_count = 2 * scene.meshes.size();
+	size_t aggregated_triangle_count = 0;
+	size_t aggregated_index_count = 0;
+
+	for (size_t i = 0; i < mesh_data_count; i++) {
+		mesh_data_bvh_offsets[i] = aggregated_bvh_node_count;
+		mesh_data_triangle_offsets[i] = aggregated_triangle_count;
+		rebuild_mesh_data_index_offsets[i] = aggregated_index_count;
+
+		aggregated_bvh_node_count += scene.asset_manager.mesh_datas[i].bvh->node_count();
+		aggregated_triangle_count += scene.asset_manager.mesh_datas[i].triangles.size();
+		aggregated_index_count += scene.asset_manager.mesh_datas[i].bvh->indices.size();;
+	}
+
+	Array<CUDATriangle> aggregated_triangles(aggregated_index_count);
+	Array<int> aggregated_triangle_material_ids(aggregated_index_count);
+	reverse_indices.resize(aggregated_triangle_count);
+
+	for (int m = 0; m < mesh_data_count; m++) {
+		const MeshData& mesh_data = scene.asset_manager.mesh_datas[m];
+		
+		for (size_t i = 0; i < mesh_data.bvh->indices.size(); i++) {
+			int originalIndex = mesh_data.bvh->indices[i];
+			int gpuTriangleIndex = rebuild_mesh_data_index_offsets[m] + i;
+			const Triangle& triangle = mesh_data.triangles[originalIndex];
+			aggregated_triangle_material_ids[rebuild_mesh_data_index_offsets[m] + i] = mesh_data.material_ids.size() == mesh_data.triangles.size() ? mesh_data.material_ids[originalIndex] : INVALID;
+
+			aggregated_triangles[gpuTriangleIndex].position_0 = triangle.position_0;
+			aggregated_triangles[gpuTriangleIndex].position_edge_1 = triangle.position_1 - triangle.position_0;
+			aggregated_triangles[gpuTriangleIndex].position_edge_2 = triangle.position_2 - triangle.position_0;
+
+			aggregated_triangles[gpuTriangleIndex].normal_0 = triangle.normal_0;
+			aggregated_triangles[gpuTriangleIndex].normal_edge_1 = triangle.normal_1 - triangle.normal_0;
+			aggregated_triangles[gpuTriangleIndex].normal_edge_2 = triangle.normal_2 - triangle.normal_0;
+
+			aggregated_triangles[gpuTriangleIndex].tex_coord_0 = triangle.tex_coord_0;
+			aggregated_triangles[gpuTriangleIndex].tex_coord_edge_1 = triangle.tex_coord_1 - triangle.tex_coord_0;
+			aggregated_triangles[gpuTriangleIndex].tex_coord_edge_2 = triangle.tex_coord_2 - triangle.tex_coord_0;
+
+			reverse_indices[mesh_data_triangle_offsets[m] + originalIndex] = gpuTriangleIndex;
+		}
+	}
+
+	ASSERT(aggregated_index_count == triangle_counter_count);
+
+	CUDAMemory::memcpy(ptr_triangles, aggregated_triangles.data(), aggregated_index_count);
+	CUDAMemory::memcpy(ptr_triangle_material_ids, aggregated_triangle_material_ids.data(), aggregated_index_count);
+	
+	Array<BVHNode8> aggregated_bvh_nodes(aggregated_bvh_node_count);
+	const BVH8& rebuiltTlas = *static_cast<const BVH8*>(tlas.get());
+	const size_t tlasCapacity = 2 * scene.meshes.size();
+
+	ASSERT(rebuiltTlas.nodes.size() <= tlasCapacity);
+	for (size_t n = 0; n < rebuiltTlas.nodes.size(); n++) {
+		aggregated_bvh_nodes[n] = rebuiltTlas.nodes[n];
+	}
+
+	for (int m = 0; m < mesh_data_count; m++) {
+		const MeshData& mesh_data = scene.asset_manager.mesh_datas[m];
+		const BVH8* bvh = static_cast<const BVH8*>(mesh_data.bvh.get());
+
+		int index_offset = rebuild_mesh_data_index_offsets[m];
+		int bvh_offset = mesh_data_bvh_offsets[m];
+
+		BVHNode8* dst = aggregated_bvh_nodes.data() + bvh_offset;
+
+		for (size_t n = 0; n < bvh->nodes.size(); n++) {
+			BVHNode8& node = dst[n];
+			node = bvh->nodes[n];
+
+			node.base_index_triangle += index_offset;
+			node.base_index_child += bvh_offset;
+		}
+	}
+
+	CUDAMemory::free(ptr_bvh_nodes_8);
+	ptr_bvh_nodes_8 = CUDAMemory::malloc<BVHNode8>(aggregated_bvh_nodes);
+	cuda_module.get_global("bvh8_nodes").set_value(ptr_bvh_nodes_8);
+
+	//rebuild mesh metadata on gpu
+	for (int i = 0; i < scene.meshes.size(); i++) {
+		const Mesh& mesh = scene.meshes[rebuiltTlas.indices[i]];
+
+		pinned_mesh_bvh_root_indices[i] = mesh_data_bvh_offsets[mesh.mesh_data_handle.handle] | (mesh.has_identity_transform() << 31);
+
+		ASSERT(mesh.material_handle.handle != INVALID);
+		pinned_mesh_material_ids[i] = mesh.material_handle.handle;
+
+		memcpy(pinned_mesh_transforms[i].cells, mesh.transform.cells, sizeof(Matrix3x4));
+		memcpy(pinned_mesh_transforms_inv[i].cells, mesh.transform_inv.cells, sizeof(Matrix3x4));
+		memcpy(pinned_mesh_transforms_prev[i].cells, mesh.transform_prev.cells, sizeof(Matrix3x4));
+	}
+
+	CUDAMemory::memcpy_async(ptr_mesh_bvh_root_indices, pinned_mesh_bvh_root_indices, scene.meshes.size(), memory_stream);
+	CUDAMemory::memcpy_async(ptr_mesh_material_ids, pinned_mesh_material_ids, scene.meshes.size(), memory_stream);
+	CUDAMemory::memcpy_async(ptr_mesh_transforms, pinned_mesh_transforms, scene.meshes.size(), memory_stream);
+	CUDAMemory::memcpy_async(ptr_mesh_transforms_inv, pinned_mesh_transforms_inv, scene.meshes.size(), memory_stream);
+	CUDAMemory::memcpy_async(ptr_mesh_transforms_prev, pinned_mesh_transforms_prev, scene.meshes.size(), memory_stream);
 }

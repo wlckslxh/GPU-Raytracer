@@ -15,6 +15,9 @@
 
 #include "Util/PMJ.h"
 
+//jichan add
+#include "BVH/Rebuilders/BVH8RebuildRayDistribution.h"
+
 
 // Mirror CUDA vector types
 struct alignas(8)  float2 { float x, y; };
@@ -274,6 +277,9 @@ struct Integrator {
 	bool aov_render_gui_checkbox(AOVType aov_type, const char * aov_name);
 
 	void build_tlas();
+
+	//jichan add
+	void rebuild_bvh8_from_counters();
 
 	virtual void update(float delta, Allocator * frame_allocator);
 	virtual void render() = 0;
