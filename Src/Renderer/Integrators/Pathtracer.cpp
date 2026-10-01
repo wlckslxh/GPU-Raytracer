@@ -783,12 +783,71 @@ void Pathtracer::render() {
 			pinned_buffer_sizes->reset(Math::min(batch_size, pixels_left));
 			global_buffer_sizes.set_value(*pinned_buffer_sizes);
 		}
+	}	
+	
+	if (gpu_config.enable_svgf) {
+		// Temporal reprojection + integration
+		event_pool.record(&event_desc_svgf_reproject);
+		kernel_svgf_reproject.execute(sample_index);
+
+		CUdeviceptr direct_in    = get_aov(AOVType::RADIANCE_DIRECT)  .framebuffer.ptr;
+		CUdeviceptr indirect_in  = get_aov(AOVType::RADIANCE_INDIRECT).framebuffer.ptr;
+		CUdeviceptr direct_out   = get_aov(AOVType::RADIANCE_DIRECT)  .accumulator.ptr;
+		CUdeviceptr indirect_out = get_aov(AOVType::RADIANCE_INDIRECT).accumulator.ptr;
+
+		if (gpu_config.enable_spatial_variance) {
+			// Estimate Variance spatially
+			event_pool.record(&event_desc_svgf_variance);
+			kernel_svgf_variance.execute(direct_in, indirect_in, direct_out, indirect_out);
+
+			Util::swap(direct_in,   direct_out);
+			Util::swap(indirect_in, indirect_out);
+		}
+
+		// �-Trous Filter
+		for (int i = 0; i < gpu_config.num_atrous_iterations; i++) {
+			int step_size = 1 << i;
+
+			event_pool.record(&event_desc_svgf_atrous[i]);
+			kernel_svgf_atrous.execute(direct_in, indirect_in, direct_out, indirect_out, step_size);
+
+			// Ping-Pong the Frame Buffers
+			Util::swap(direct_in,   direct_out);
+			Util::swap(indirect_in, indirect_out);
+		}
+
+		event_pool.record(&event_desc_svgf_finalize);
+		kernel_svgf_finalize.execute(direct_in, indirect_in);
+
+		if (gpu_config.enable_taa) {
+			event_pool.record(&event_desc_taa);
+
+			kernel_taa         .execute(sample_index);
+			kernel_taa_finalize.execute();
+		}
+	} else {
+		event_pool.record(&event_desc_accumulate);
+		kernel_accumulate.execute(float(sample_index));
+	}
+
+	event_pool.record(&event_desc_end);
+
+	// Reset buffer sizes to default for next frame
+	pinned_buffer_sizes->reset(batch_size);
+	global_buffer_sizes.set_value(*pinned_buffer_sizes);
+
+	aovs_clear_to_zero();
+
+	// If a pixel query was previously pending, it has just been resolved in the current frame
+	if (pixel_query_status == PixelQueryStatus::PENDING) {
+		pixel_query_status =  PixelQueryStatus::OUTPUT_READY;
 	}
 
 	//jichan add
 	if (counter_mode) {
 		if (bvh_counter_dumped + 1 == counter_limit) {
-			if(dump_bvh_counter){
+			//dumping bvh counter informations
+			if (dump_bvh_counter) {
 				CUDACALL(cuStreamSynchronize(nullptr));
 
 				Array<uint64_t> host_counters(bvh_counter_count);
@@ -890,70 +949,12 @@ void Pathtracer::render() {
 			}
 			counter_mode = false;
 			CUDAMemory::memset_async(ptr_counter_mode, counter_mode, 1, memory_stream);
+			//rebuild bvh8 with counter info
 			rebuild_bvh8_from_counters();
 		}
 		else if (bvh_counter_dumped < counter_limit) {
 			bvh_counter_dumped++;
 		}
-	}
-	
-	
-	if (gpu_config.enable_svgf) {
-		// Temporal reprojection + integration
-		event_pool.record(&event_desc_svgf_reproject);
-		kernel_svgf_reproject.execute(sample_index);
-
-		CUdeviceptr direct_in    = get_aov(AOVType::RADIANCE_DIRECT)  .framebuffer.ptr;
-		CUdeviceptr indirect_in  = get_aov(AOVType::RADIANCE_INDIRECT).framebuffer.ptr;
-		CUdeviceptr direct_out   = get_aov(AOVType::RADIANCE_DIRECT)  .accumulator.ptr;
-		CUdeviceptr indirect_out = get_aov(AOVType::RADIANCE_INDIRECT).accumulator.ptr;
-
-		if (gpu_config.enable_spatial_variance) {
-			// Estimate Variance spatially
-			event_pool.record(&event_desc_svgf_variance);
-			kernel_svgf_variance.execute(direct_in, indirect_in, direct_out, indirect_out);
-
-			Util::swap(direct_in,   direct_out);
-			Util::swap(indirect_in, indirect_out);
-		}
-
-		// �-Trous Filter
-		for (int i = 0; i < gpu_config.num_atrous_iterations; i++) {
-			int step_size = 1 << i;
-
-			event_pool.record(&event_desc_svgf_atrous[i]);
-			kernel_svgf_atrous.execute(direct_in, indirect_in, direct_out, indirect_out, step_size);
-
-			// Ping-Pong the Frame Buffers
-			Util::swap(direct_in,   direct_out);
-			Util::swap(indirect_in, indirect_out);
-		}
-
-		event_pool.record(&event_desc_svgf_finalize);
-		kernel_svgf_finalize.execute(direct_in, indirect_in);
-
-		if (gpu_config.enable_taa) {
-			event_pool.record(&event_desc_taa);
-
-			kernel_taa         .execute(sample_index);
-			kernel_taa_finalize.execute();
-		}
-	} else {
-		event_pool.record(&event_desc_accumulate);
-		kernel_accumulate.execute(float(sample_index));
-	}
-
-	event_pool.record(&event_desc_end);
-
-	// Reset buffer sizes to default for next frame
-	pinned_buffer_sizes->reset(batch_size);
-	global_buffer_sizes.set_value(*pinned_buffer_sizes);
-
-	aovs_clear_to_zero();
-
-	// If a pixel query was previously pending, it has just been resolved in the current frame
-	if (pixel_query_status == PixelQueryStatus::PENDING) {
-		pixel_query_status =  PixelQueryStatus::OUTPUT_READY;
 	}
 }
 
