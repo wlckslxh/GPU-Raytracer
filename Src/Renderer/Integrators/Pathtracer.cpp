@@ -844,8 +844,8 @@ void Pathtracer::render() {
 	}
 
 	//jichan add
-	if (counter_mode) {
-		if (bvh_counter_dumped + 1 == counter_limit) {
+	if (rebuildingState == collectingCounter) {
+		if (bvh_counter_dumped == counter_limit) {
 			//dumping bvh counter informations
 			if (dump_bvh_counter) {
 				CUDACALL(cuStreamSynchronize(nullptr));
@@ -949,11 +949,35 @@ void Pathtracer::render() {
 			}
 			counter_mode = false;
 			CUDAMemory::memset_async(ptr_counter_mode, counter_mode, 1, memory_stream);
-			//rebuild bvh8 with counter info
-			rebuild_bvh8_from_counters();
+			//change state to measuring previous fps
+			rebuildingState = previousBVHFps;
 		}
 		else if (bvh_counter_dumped < counter_limit) {
 			bvh_counter_dumped++;
+		}
+	}
+	else if (rebuildingState == previousBVHFps) {
+		if (measuringFrame == counter_limit){
+			printf("Original bvh fps : %.2f\n", 1000.0f * counter_limit / total_frame_time);
+			measuringFrame = 0;
+			rebuildingState = rebuildBVHFps;
+			total_frame_time = 0;
+			//rebuild bvh
+			rebuild_bvh8_from_counters();
+		}
+		else if (measuringFrame < counter_limit) {
+			total_frame_time += CUDAEvent::time_elapsed_between(event_pool.pool[0], event_pool.pool[event_pool.num_used - 1]);
+			measuringFrame++;
+		}
+	}
+	else if (rebuildingState == rebuildBVHFps) {
+		if (measuringFrame == counter_limit) {
+			printf("Rebuilt bvh fps : %.2f\n", 1000.0f * counter_limit / total_frame_time);
+			rebuildingState = invalid;
+		}
+		else if (measuringFrame < counter_limit) {
+			total_frame_time += CUDAEvent::time_elapsed_between(event_pool.pool[0], event_pool.pool[event_pool.num_used - 1]);
+			measuringFrame++;
 		}
 	}
 }

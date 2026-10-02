@@ -169,6 +169,7 @@ struct Integrator {
 	uint64_t bvh_counter_dumped = 0;
 	CUDAMemory::Ptr<bool> ptr_counter_mode;
 	Array<int> mesh_data_index_offsets;
+	//jichan add end
 
 	CUDAMemory::Ptr<int>       ptr_mesh_bvh_root_indices;
 	CUDAMemory::Ptr<int>       ptr_mesh_material_ids;
@@ -212,9 +213,19 @@ struct Integrator {
 	CUDAModule::Global global_aovs;
 
 	//jichan add
-	bool counter_mode = false;
+	enum rebuildState {
+		invalid,
+		collectingCounter,
+		previousBVHFps,
+		rebuildBVHFps
+	};
+	bool counter_mode = true;
+	uint8_t rebuildingState = counter_mode;
+	uint64_t measuringFrame = 0;
 	uint64_t counter_limit = 200ull;
 	bool dump_bvh_counter = false;
+	float total_frame_time = 0;
+	//jichan add end
 
 	Integrator(Scene & scene) : scene(scene) {
 		CUDACALL(cuStreamCreate(&memory_stream, CU_STREAM_NON_BLOCKING));

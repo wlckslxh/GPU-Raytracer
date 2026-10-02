@@ -624,8 +624,14 @@ void Integrator::update(float delta, Allocator * frame_allocator) {
 		build_tlas();
 	}
 	
-	if (counter_mode) {
+	if (rebuildingState == collectingCounter) {
 		apply_camera_path_set(scene.camera, bvh_counter_dumped);
+		invalidated_camera = true;
+	}
+	else if ((rebuildingState == previousBVHFps ||
+		rebuildingState == rebuildBVHFps) &&
+		measuringFrame < counter_limit) {
+		apply_camera_path_set(scene.camera, measuringFrame);
 		invalidated_camera = true;
 	}
 		
