@@ -13,12 +13,20 @@ __device__ __constant__ const int   * light_triangle_mesh_indices;
 __device__ __constant__ int           light_triangle_count;
 
 struct PunctualLight {
-	float4 position_and_radius;
-	float4 color;
+	float4 position_and_range;
+	float4 color_and_intensity;
 };
 
 __device__ __constant__ const PunctualLight * punctual_lights;
 __device__ __constant__ int                   punctual_light_count;
+
+struct DirectionalLight {
+	float4 direction;
+	float4 color_and_intensity;
+};
+
+__device__ __constant__ const DirectionalLight * directional_lights;
+__device__ __constant__ int                     directional_light_count;
 
 __device__ inline bool pdf_is_valid(float pdf) {
 	return isfinite(pdf) && pdf > 1e-4f;
@@ -40,6 +48,7 @@ enum struct SampleDimension {
 	NEE_LIGHT,
 	NEE_TRIANGLE,
 	NEE_PUNCTUAL,
+	NEE_DIRECTIONAL,
 	BSDF_0,
 	BSDF_1,
 

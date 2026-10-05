@@ -235,16 +235,24 @@ struct Pathtracer final : Integrator {
 	CUDAModule::Global global_lights_total_weight;
 	CUDAModule::Global global_punctual_lights;
 	CUDAModule::Global global_punctual_light_count;
+	CUDAModule::Global global_directional_lights;
+	CUDAModule::Global global_directional_light_count;
 
 	CUDAMemory::Ptr<int>   ptr_light_triangle_indices;
 	CUDAMemory::Ptr<float> ptr_light_triangle_cumulative_probability;
 	CUDAMemory::Ptr<int>   ptr_light_triangle_mesh_indices;
 
 	struct CUDAPunctualLight {
-		Vector4 position_and_radius;
-		Vector4 color;
+		Vector4 position_and_range;
+		Vector4 color_and_intensity;
 	};
 	CUDAMemory::Ptr<CUDAPunctualLight> ptr_punctual_lights;
+
+	struct CUDADirectionalLight {
+		Vector4 direction;
+		Vector4 color_and_intensity;
+	};
+	CUDAMemory::Ptr<CUDADirectionalLight> ptr_directional_lights;
 
 	struct LightTriangleData {
 		int triangle_index;
@@ -298,4 +306,5 @@ struct Pathtracer final : Integrator {
 	void calc_light_power(Allocator * frame_allocator);
 	void calc_light_mesh_weights();
 	void upload_punctual_lights();
+	void upload_directional_lights();
 };

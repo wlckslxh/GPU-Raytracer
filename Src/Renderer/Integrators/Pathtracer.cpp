@@ -40,7 +40,10 @@ void Pathtracer::cuda_init(unsigned frame_buffer_handle, int screen_width, int s
 	global_lights_total_weight.set_value(0.0f);
 	global_punctual_lights = cuda_module.get_global("punctual_lights");
 	global_punctual_light_count = cuda_module.get_global("punctual_light_count");
+	global_directional_lights = cuda_module.get_global("directional_lights");
+	global_directional_light_count = cuda_module.get_global("directional_light_count");
 	upload_punctual_lights();
+	upload_directional_lights();
 
 	Integrator::cuda_init(frame_buffer_handle, screen_width, screen_height);
 }
@@ -60,6 +63,7 @@ void Pathtracer::cuda_free() {
 	if (ptr_light_triangle_cumulative_probability.ptr) CUDAMemory::free(ptr_light_triangle_cumulative_probability);
 	if (ptr_light_triangle_mesh_indices.ptr) CUDAMemory::free(ptr_light_triangle_mesh_indices);
 	if (ptr_punctual_lights.ptr) CUDAMemory::free(ptr_punctual_lights);
+	if (ptr_directional_lights.ptr) CUDAMemory::free(ptr_directional_lights);
 	if (ray_buffer_shadow.max_distance.ptr) ray_buffer_shadow.free();
 
 	ray_buffer_trace_0.free();
@@ -85,13 +89,34 @@ void Pathtracer::upload_punctual_lights() {
 	Array<CUDAPunctualLight> cuda_lights(scene.punctual_lights.size());
 	for (size_t i = 0; i < scene.punctual_lights.size(); ++i) {
 		const PunctualLight & light = scene.punctual_lights[i];
-		cuda_lights[i].position_and_radius = Vector4(light.position.x, light.position.y, light.position.z, light.radius);
-		cuda_lights[i].color = Vector4(light.color.x, light.color.y, light.color.z, 0.0f);
+		cuda_lights[i].position_and_range = Vector4(light.position.x, light.position.y, light.position.z, light.range);
+		cuda_lights[i].color_and_intensity = Vector4(light.color.x, light.color.y, light.color.z, light.intensity);
 	}
 
 	ptr_punctual_lights = CUDAMemory::malloc(cuda_lights);
 	global_punctual_lights.set_value(ptr_punctual_lights);
 	global_punctual_light_count.set_value(int(scene.punctual_lights.size()));
+}
+
+void Pathtracer::upload_directional_lights() {
+	if (ptr_directional_lights.ptr) CUDAMemory::free(ptr_directional_lights);
+
+	if (scene.directional_lights.size() == 0) {
+		global_directional_lights.set_value(CUDAMemory::Ptr<CUDADirectionalLight> { });
+		global_directional_light_count.set_value(0);
+		return;
+	}
+
+	Array<CUDADirectionalLight> cuda_lights(scene.directional_lights.size());
+	for (size_t i = 0; i < scene.directional_lights.size(); ++i) {
+		const DirectionalLight & light = scene.directional_lights[i];
+		cuda_lights[i].direction = Vector4(light.direction.x, light.direction.y, light.direction.z, 0.0f);
+		cuda_lights[i].color_and_intensity = Vector4(light.color.x, light.color.y, light.color.z, light.intensity);
+	}
+
+	ptr_directional_lights = CUDAMemory::malloc(cuda_lights);
+	global_directional_lights.set_value(ptr_directional_lights);
+	global_directional_light_count.set_value(int(scene.directional_lights.size()));
 }
 
 void Pathtracer::init_module() {
@@ -418,7 +443,9 @@ void Pathtracer::calc_light_power(Allocator * frame_allocator) {
 				material_id = mesh_data.material_ids[triangle_index];
 			}
 			const Material & material = scene.asset_manager.get_material({ material_id });
-			if (!material.is_light()) continue;
+			const bool is_textured_emitter = material.emissive_texture_handle.handle != INVALID &&
+				(material.emission.x > 0.0f || material.emission.y > 0.0f || material.emission.z > 0.0f);
+			if (!material.is_light() && !is_textured_emitter) continue;
 
 			const Triangle & triangle = mesh_data.triangles[triangle_index];
 			const float area = 0.5f * Vector3::length(Vector3::cross(
@@ -499,11 +526,15 @@ void Pathtracer::update(float delta, Allocator * frame_allocator) {
 
 		Array<Material::Type> cuda_material_types(materials.size(), frame_allocator);
 		Array<CUDAMaterial>   cuda_materials     (materials.size(), frame_allocator);
+		Array<int>             cuda_material_emissive_texture_ids(materials.size(), frame_allocator);
+		Array<Vector4>         cuda_material_emissions(materials.size(), frame_allocator);
 
 		for (int i = 0; i < materials.size(); i++) {
 			const Material & material = materials[i];
 
 			cuda_material_types[i] = material.type;
+			cuda_material_emissive_texture_ids[i] = material.emissive_texture_handle.handle;
+			cuda_material_emissions[i] = Vector4(material.emission.x, material.emission.y, material.emission.z, 0.0f);
 
 			switch (material.type) {
 				case Material::Type::LIGHT: {
@@ -539,6 +570,8 @@ void Pathtracer::update(float delta, Allocator * frame_allocator) {
 
 		CUDAMemory::memcpy_async(ptr_material_types, cuda_material_types.data(), materials.size(), memory_stream);
 		CUDAMemory::memcpy_async(ptr_materials,      cuda_materials     .data(), materials.size(), memory_stream);
+		CUDAMemory::memcpy_async(ptr_material_emissive_texture_ids, cuda_material_emissive_texture_ids.data(), materials.size(), memory_stream);
+		CUDAMemory::memcpy_async(ptr_material_emissions, cuda_material_emissions.data(), materials.size(), memory_stream);
 
 		bool had_diffuse    = scene.has_diffuse;
 		bool had_plastic    = scene.has_plastic;
@@ -603,8 +636,8 @@ void Pathtracer::update(float delta, Allocator * frame_allocator) {
 		bool lights_changed = had_lights ^ scene.has_lights;
 		if (lights_changed) {
 			if (scene.has_lights) {
-				// A path can emit one area-light and one punctual-light shadow ray.
-				ray_buffer_shadow.init(BATCH_SIZE * (scene.punctual_lights.size() > 0 ? 2 : 1));
+				// One area, point and directional NEE ray can be emitted per path.
+				ray_buffer_shadow.init(BATCH_SIZE * 3);
 
 				invalidated_scene = true;
 			} else {

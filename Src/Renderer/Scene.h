@@ -7,13 +7,20 @@
 #include "Mesh.h"
 #include "Sky.h"
 
-// Analytic point lights imported from KHR_lights_punctual.  `radius` is the
-// project-specific attenuation range used by the Vulkan renderer, not a mesh
-// radius.
+// Analytic lights imported from KHR_lights_punctual. `range == 0` denotes the
+// glTF default: no finite cutoff range.
 struct PunctualLight {
 	Vector3 position;
 	Vector3 color;
-	float   radius = 1.0f;
+	float   intensity = 1.0f;
+	float   range = 0.0f;
+};
+
+struct DirectionalLight {
+	// Direction in which light travels (the glTF node's local -Z axis).
+	Vector3 direction;
+	Vector3 color;
+	float   intensity = 1.0f;
 };
 
 struct Scene {
@@ -24,6 +31,7 @@ struct Scene {
 	Camera      camera;
 	Array<Mesh> meshes;
 	Array<PunctualLight> punctual_lights;
+	Array<DirectionalLight> directional_lights;
 	Sky         sky;
 
 	bool has_diffuse    = false;

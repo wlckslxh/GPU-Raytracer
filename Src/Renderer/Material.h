@@ -22,6 +22,7 @@ struct Material {
 	Type type = Type::DIFFUSE;
 
 	Vector3 emission;
+	Handle<Texture> emissive_texture_handle;
 
 	Vector3         diffuse = Vector3(1.0f, 1.0f, 1.0f);
 	Handle<Texture> texture_handle;

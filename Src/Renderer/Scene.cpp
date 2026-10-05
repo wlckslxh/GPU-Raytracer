@@ -15,7 +15,7 @@
 #include "Util/Util.h"
 #include "Util/StringUtil.h"
 
-Scene::Scene(Allocator * allocator) : allocator(allocator), asset_manager(allocator), camera(Math::deg_to_rad(85.0f)), meshes(allocator), punctual_lights(allocator) {
+Scene::Scene(Allocator * allocator) : allocator(allocator), asset_manager(allocator), camera(Math::deg_to_rad(85.0f)), meshes(allocator), punctual_lights(allocator), directional_lights(allocator) {
 	LinearAllocator<MEGABYTES(4)> load_allocator;
 
 	for (int i = 0; i < cpu_config.scene_filenames.size(); i++) {
@@ -66,8 +66,12 @@ void Scene::check_materials() {
 			case Material::Type::LIGHT:      has_lights    |= material.is_light(); break;
 			default: ASSERT_UNREACHABLE();
 		}
+		// Textured emission is not represented by Material::Type::LIGHT, but it
+		// still needs a shadow-ray buffer and area-light sampling.
+		has_lights |= material.emissive_texture_handle.handle != INVALID &&
+			(material.emission.x > 0.0f || material.emission.y > 0.0f || material.emission.z > 0.0f);
 	}
-	has_lights |= punctual_lights.size() > 0;
+	has_lights |= punctual_lights.size() > 0 || directional_lights.size() > 0;
 }
 
 void Scene::update(float delta) {

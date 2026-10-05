@@ -161,8 +161,12 @@ void Integrator::init_globals() {
 void Integrator::init_materials() {
 	ptr_material_types = CUDAMemory::malloc<Material::Type>(scene.asset_manager.materials.size());
 	ptr_materials      = CUDAMemory::malloc<CUDAMaterial>  (scene.asset_manager.materials.size());
+	ptr_material_emissive_texture_ids = CUDAMemory::malloc<int>(scene.asset_manager.materials.size());
+	ptr_material_emissions = CUDAMemory::malloc<Vector4>(scene.asset_manager.materials.size());
 	cuda_module.get_global("material_types").set_value(ptr_material_types);
 	cuda_module.get_global("materials")     .set_value(ptr_materials);
+	cuda_module.get_global("material_emissive_texture_ids").set_value(ptr_material_emissive_texture_ids);
+	cuda_module.get_global("material_emissions").set_value(ptr_material_emissions);
 
 	scene.asset_manager.wait_until_loaded();
 
@@ -485,6 +489,8 @@ void Integrator::init_aovs() {
 void Integrator::free_materials() {
 	CUDAMemory::free(ptr_material_types);
 	CUDAMemory::free(ptr_materials);
+	CUDAMemory::free(ptr_material_emissive_texture_ids);
+	CUDAMemory::free(ptr_material_emissions);
 
 	CUDAMemory::free(ptr_media);
 
