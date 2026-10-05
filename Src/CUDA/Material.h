@@ -40,6 +40,8 @@ union Material {
 
 __device__ __constant__ const MaterialType * material_types;
 __device__ __constant__ const Material     * materials;
+__device__ __constant__ const int          * material_emissive_texture_ids;
+__device__ __constant__ const float4       * material_emissions;
 
 __device__ inline MaterialType material_get_type(int material_id) {
 	return material_types[material_id];
@@ -78,6 +80,18 @@ __device__ inline MaterialLight material_as_light(int material_id) {
 	MaterialLight material;
 	material.emission = make_float3(emission);
 	return material;
+}
+
+__device__ inline float3 material_get_emission(int material_id, float s, float t) {
+	int texture_id = __ldg(&material_emissive_texture_ids[material_id]);
+	if (texture_id == INVALID) return make_float3(0.0f);
+	return make_float3(__ldg(&material_emissions[material_id])) * make_float3(textures[texture_id].get(s, t));
+}
+
+// Triangle selection uses this factor as its approximate emission weight;
+// textured radiance is evaluated at the sampled UV separately.
+__device__ inline float3 material_get_emission_factor(int material_id) {
+	return make_float3(__ldg(&material_emissions[material_id]));
 }
 
 __device__ inline MaterialDiffuse material_as_diffuse(int material_id) {

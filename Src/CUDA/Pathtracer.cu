@@ -486,11 +486,14 @@ __device__ void next_event_estimation(
 	// Pick random point on the Light
 	float2 light_uv = sample_triangle(rand_triangle.x, rand_triangle.y);
 
-	// Obtain the Light's position and geometric normal
-	TrianglePos light_triangle = triangle_get_positions(light_triangle_id);
+	// Obtain the Light's position, geometric normal and UV. The UV is needed
+	// when a glTF emissive texture is sampled as an area light.
+	TrianglePosNorTex light_triangle = triangle_get_positions_normals_and_tex_coords(light_triangle_id);
 
 	float3 light_point;
-	triangle_barycentric(light_triangle, light_uv.x, light_uv.y, light_point);
+	float3 unused_normal;
+	float2 light_tex_coord;
+	triangle_barycentric(light_triangle, light_uv.x, light_uv.y, light_point, unused_normal, light_tex_coord);
 
 	float3 light_geometric_normal = cross(light_triangle.position_edge_1, light_triangle.position_edge_2);
 
@@ -512,14 +515,19 @@ __device__ void next_event_estimation(
 	float cos_theta_hit = dot(to_light, normal);
 
 	int light_material_id = triangle_get_material_id(light_mesh_id, light_triangle_id);
-	MaterialLight light_material = material_as_light(light_material_id);
+	float3 light_emission = material_get_emission(light_material_id, light_tex_coord.x, light_tex_coord.y);
+	if (material_get_type(light_material_id) == MaterialType::LIGHT) {
+		light_emission = material_as_light(light_material_id).emission;
+	}
+	float3 light_emission_factor = material_get_emission_factor(light_material_id);
+	float light_power = luminance(light_emission_factor.x, light_emission_factor.y, light_emission_factor.z);
+	if (light_power <= 0.0f || vmax_max(light_emission.x, light_emission.y, light_emission.z) <= 0.0f) return;
 
 	float3 bsdf_value;
 	float  bsdf_pdf;
 	bool valid = bsdf.eval(to_light, cos_theta_hit, bsdf_value, bsdf_pdf);
 	if (!valid) return;
 
-	float light_power = luminance(light_material.emission.x, light_material.emission.y, light_material.emission.z);
 	float light_pdf   = light_power * square(distance_to_light) / (cos_theta_light * lights_total_weight);
 
 	if (!pdf_is_valid(light_pdf)) return;
@@ -531,7 +539,7 @@ __device__ void next_event_estimation(
 		mis_weight = 1.0f;
 	}
 
-	float3 illumination = throughput * bsdf_value * light_material.emission * mis_weight / light_pdf;
+	float3 illumination = throughput * bsdf_value * light_emission * mis_weight / light_pdf;
 
 	/*
 	// If inside a Medium, apply absorption and out-scattering
@@ -556,25 +564,6 @@ __device__ void next_event_estimation(
 	);
 }
 
-__device__ float punctual_light_attenuation(float distance, float radius, float3 color) {
-	// Match the attenuation function and default parameters (alpha=.6,
-	// beta=.8, gamma=.2) used by the Vulkan renderer.
-	constexpr float alpha = 0.6f;
-	constexpr float beta  = 0.8f;
-	constexpr float gamma = 0.2f;
-	if (distance <= radius * alpha) {
-		float m = distance / (alpha * radius);
-		float n = 1.0f - 1.0f / beta;
-		return fminf(fmaxf(1.0f / (m * n * (m - 2.0f) + 1.0f), 0.001f), 1.0f);
-	}
-
-	float m = alpha * radius;
-	float n = 1.0f / beta;
-	float intensity = fmaxf(color.x, fmaxf(color.y, color.z));
-	float denominator = (1.0f / square(radius - m)) * (intensity / gamma - n) * square(distance - m) + n;
-	return fminf(fmaxf(1.0f / denominator, 0.001f), 1.0f);
-}
-
 template<typename BSDF>
 __device__ void next_event_estimation_punctual(
 	int          pixel_index,
@@ -592,20 +581,20 @@ __device__ void next_event_estimation_punctual(
 	int light_index = min(int(u * punctual_light_count), punctual_light_count - 1);
 	PunctualLight light = punctual_lights[light_index];
 
-	float3 light_position = make_float3(light.position_and_radius);
+	float3 light_position = make_float3(light.position_and_range);
 	float3 to_light = light_position - hit_point;
 	float distance_to_light = length(to_light);
-	float radius = light.position_and_radius.w;
-	if (distance_to_light <= 0.0f || distance_to_light > radius) return;
+	float range = light.position_and_range.w;
+	if (distance_to_light <= 0.0f || (range > 0.0f && distance_to_light > range)) return;
 	to_light /= distance_to_light;
 
 	float3 bsdf_value;
 	float bsdf_pdf;
 	if (!bsdf.eval(to_light, dot(to_light, normal), bsdf_value, bsdf_pdf)) return;
 
-	float3 color = make_float3(light.color);
-	float3 illumination = throughput * bsdf_value * color
-		* (punctual_light_attenuation(distance_to_light, radius, color) * float(punctual_light_count));
+	float3 radiant_intensity = make_float3(light.color_and_intensity) * light.color_and_intensity.w;
+	float3 illumination = throughput * bsdf_value * radiant_intensity
+		* (float(punctual_light_count) / square(distance_to_light));
 
 	hit_point = ray_origin_epsilon_offset(hit_point, to_light, geometric_normal);
 	int shadow_ray_index = atomicAdd(&buffer_sizes.shadow[bounce], 1);
@@ -614,6 +603,44 @@ __device__ void next_event_estimation_punctual(
 	ray_buffer_shadow.traversal_data.max_distance[shadow_ray_index] = distance_to_light;
 	ray_buffer_shadow.illumination_and_pixel_index[shadow_ray_index] = make_float4(
 		illumination.x, illumination.y, illumination.z, __int_as_float(pixel_index));
+}
+
+template<typename BSDF>
+__device__ void next_event_estimation_directional(
+	int          pixel_index,
+	int          bounce,
+	int          sample_index,
+	const BSDF & bsdf,
+	float3       hit_point,
+	float3       normal,
+	float3       geometric_normal,
+	float3       throughput
+) {
+	if (directional_light_count <= 0) return;
+
+	float u = random<SampleDimension::NEE_DIRECTIONAL>(pixel_index, bounce, sample_index).x;
+	int light_index = min(int(u * directional_light_count), directional_light_count - 1);
+	DirectionalLight light = directional_lights[light_index];
+	float3 to_light = -make_float3(light.direction);
+
+	float3 bsdf_value;
+	float bsdf_pdf;
+	if (!bsdf.eval(to_light, dot(to_light, normal), bsdf_value, bsdf_pdf)) return;
+
+	float3 radiance = make_float3(light.color_and_intensity) * light.color_and_intensity.w;
+	float3 illumination = throughput * bsdf_value * radiance * float(directional_light_count);
+
+	hit_point = ray_origin_epsilon_offset(hit_point, to_light, geometric_normal);
+	int shadow_ray_index = atomicAdd(&buffer_sizes.shadow[bounce], 1);
+	ray_buffer_shadow.traversal_data.ray_origin.set(shadow_ray_index, hit_point);
+	ray_buffer_shadow.traversal_data.ray_direction.set(shadow_ray_index, to_light);
+	ray_buffer_shadow.traversal_data.max_distance[shadow_ray_index] = INFINITY;
+	ray_buffer_shadow.illumination_and_pixel_index[shadow_ray_index] = make_float4(
+		illumination.x,
+		illumination.y,
+		illumination.z,
+		__int_as_float(pixel_index)
+	);
 }
 
 template<typename BSDF, PackedMaterialBuffer * packed_material_buffer>
@@ -716,6 +743,18 @@ __device__ void shade_material(int bounce, int sample_index, int buffer_size) {
 
 	// Initialize BSDF
 	int material_id = triangle_get_material_id(hit.mesh_id, hit.triangle_id);
+	float3 emissive = material_get_emission(material_id, tex_coord.x, tex_coord.y);
+	if (vmax_max(emissive.x, emissive.y, emissive.z) > 0.0f) {
+		float3 illumination = throughput * emissive;
+		aov_framebuffer_add(AOVType::RADIANCE, pixel_index, make_float4(illumination));
+		if (bounce == 0) {
+			aov_framebuffer_add(AOVType::RADIANCE_DIRECT, pixel_index, make_float4(illumination));
+		} else if (bounce == 1) {
+			aov_framebuffer_add(AOVType::RADIANCE_DIRECT, pixel_index, make_float4(illumination));
+		} else {
+			aov_framebuffer_add(AOVType::RADIANCE_INDIRECT, pixel_index, make_float4(illumination));
+		}
+	}
 
 	BSDF bsdf;
 	bsdf.pixel_index  = pixel_index;
@@ -780,6 +819,9 @@ __device__ void shade_material(int bounce, int sample_index, int buffer_size) {
 		}
 		if (punctual_light_count > 0) {
 			next_event_estimation_punctual(pixel_index, bounce, sample_index, bsdf, hit_point, normal, geometric_normal, throughput);
+		}
+		if (directional_light_count > 0) {
+			next_event_estimation_directional(pixel_index, bounce, sample_index, bsdf, hit_point, normal, geometric_normal, throughput);
 		}
 	}
 
