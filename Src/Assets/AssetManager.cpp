@@ -155,6 +155,8 @@ Handle<Texture> AssetManager::add_texture(String filename, String name) {
 		if (!file_extension.is_empty()) {
 			if (file_extension == "dds") {
 				success = TextureLoader::load_dds(filename, &texture); // DDS is loaded using custom code
+			} else if (file_extension == "ktx2") {
+				success = TextureLoader::load_ktx2(filename, &texture);
 			} else {
 				success = TextureLoader::load_stb(filename, &texture); // other file formats use stb_image
 			}

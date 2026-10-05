@@ -3,6 +3,8 @@
 #include <ctype.h>
 #include <string.h>
 
+#include <ktx.h>
+
 #define STB_DXT_IMPLEMENTATION
 #include <stb_dxt.h>
 #define STB_IMAGE_IMPLEMENTATION
@@ -104,6 +106,74 @@ bool TextureLoader::load_dds(const String & filename, Texture * texture) {
 	}
 
 	return true;
+}
+
+bool TextureLoader::load_ktx2(const String & filename, Texture * texture) {
+	ktxTexture2 * ktx_texture = nullptr;
+	const ktxResult create_result = ktxTexture2_CreateFromNamedFile(
+		filename.data(), KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &ktx_texture);
+	if (create_result != KTX_SUCCESS || ktx_texture == nullptr) {
+		return false;
+	}
+
+	bool success = false;
+	// The models_0930 assets are ETC1S/BasisLZ KTX2 files. BC3 keeps alpha and
+	// maps directly to the renderer's existing CUDA BC3 resource-view path.
+	if (ktxTexture2_NeedsTranscoding(ktx_texture) &&
+		ktxTexture2_TranscodeBasis(ktx_texture, KTX_TTF_BC3_RGBA, 0) == KTX_SUCCESS) {
+		const int block_width = int(Math::divide_round_up(ktx_texture->baseWidth, 4u));
+		const int block_height = int(Math::divide_round_up(ktx_texture->baseHeight, 4u));
+
+		// CUDA sees a BC3 array in 4x4-block units. Once the original texture
+		// reaches 4x4 texels it is already a 1x1 CUDA array, so its later 2x2
+		// and 1x1 texel mips cannot be represented as additional CUDA levels.
+		int cuda_mip_levels = 1;
+		for (int mip_width = block_width, mip_height = block_height; mip_width > 1 || mip_height > 1; cuda_mip_levels++) {
+			if (mip_width > 1) mip_width >>= 1;
+			if (mip_height > 1) mip_height >>= 1;
+		}
+		const int mip_levels = Math::min(int(ktx_texture->numLevels), cuda_mip_levels);
+
+		if (block_width > 0 && block_height > 0 && mip_levels > 0) {
+			Array<int> mip_offsets;
+			size_t total_size = 0;
+			for (int level = 0; level < mip_levels; level++) {
+				mip_offsets.push_back(int(total_size));
+				const int level_width = Math::max(block_width >> level, 1);
+				const int level_height = Math::max(block_height >> level, 1);
+				total_size += size_t(level_width) * size_t(level_height) * 16; // BC3 block size
+			}
+
+			Array<unsigned char> data(total_size);
+			for (int level = 0; level < mip_levels; level++) {
+				ktx_size_t source_offset = 0;
+				if (ktxTexture_GetImageOffset(reinterpret_cast<ktxTexture *>(ktx_texture), level, 0, 0, &source_offset) != KTX_SUCCESS) {
+					data.clear();
+					mip_offsets.clear();
+					break;
+				}
+
+				const int level_width = Math::max(block_width >> level, 1);
+				const int level_height = Math::max(block_height >> level, 1);
+				const size_t level_size = size_t(level_width) * size_t(level_height) * 16;
+				memcpy(data.data() + mip_offsets[level], ktx_texture->pData + source_offset, level_size);
+			}
+
+			if (data.size() > 0) {
+				texture->format = Texture::Format::BC3;
+				texture->channels = 4;
+				// Compressed textures store block dimensions, matching load_dds().
+				texture->width = block_width;
+				texture->height = block_height;
+				texture->mip_offsets = std::move(mip_offsets);
+				texture->data = std::move(data);
+				success = true;
+			}
+		}
+	}
+
+	ktxTexture_Destroy(reinterpret_cast<ktxTexture *>(ktx_texture));
+	return success;
 }
 
 static void mip_count(int width, int height, int & mip_levels, int & pixel_count) {

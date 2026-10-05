@@ -75,11 +75,8 @@ static void init_integrator(OwnPtr<Integrator> & integrator, const Window & wind
 
 int main(int num_args, char ** args) {
 	Args::parse(num_args, args);
-	cpu_config.scene_filenames.push_back("Data/suntemple/SunTemple.gltf");
-	//cpu_config.scene_filenames.push_back("Data/sponza_multi_blas_transparent/Sponza.gltf");
-	//cpu_config.scene_filenames.push_back("Data/bistroexterior/BistroExterior.gltf");
 	if (cpu_config.scene_filenames.size() == 0) {
-		cpu_config.scene_filenames.push_back("Data/sponza/scene.xml"_sv);
+		cpu_config.scene_filenames.push_back("Data/models_0930/intelSponza_mod_etc1s/intelSponza_mod.json"_sv);
 	}
 	if (cpu_config.sky_filename.is_empty()) {
 		cpu_config.sky_filename = "Data/Skies/sky_15.hdr"_sv;
