@@ -38,6 +38,9 @@ void Pathtracer::cuda_init(unsigned frame_buffer_handle, int screen_width, int s
 
 	global_lights_total_weight = cuda_module.get_global("lights_total_weight");
 	global_lights_total_weight.set_value(0.0f);
+	global_punctual_lights = cuda_module.get_global("punctual_lights");
+	global_punctual_light_count = cuda_module.get_global("punctual_light_count");
+	upload_punctual_lights();
 
 	Integrator::cuda_init(frame_buffer_handle, screen_width, screen_height);
 }
@@ -53,13 +56,11 @@ void Pathtracer::cuda_free() {
 
 	CUDAMemory::free_pinned(pinned_buffer_sizes);
 
-	if (scene.has_lights) {
-		if (ptr_light_triangle_indices.ptr) CUDAMemory::free(ptr_light_triangle_indices);
-		if (ptr_light_triangle_cumulative_probability.ptr) CUDAMemory::free(ptr_light_triangle_cumulative_probability);
-		if (ptr_light_triangle_mesh_indices.ptr) CUDAMemory::free(ptr_light_triangle_mesh_indices);
-
-		ray_buffer_shadow.free();
-	}
+	if (ptr_light_triangle_indices.ptr) CUDAMemory::free(ptr_light_triangle_indices);
+	if (ptr_light_triangle_cumulative_probability.ptr) CUDAMemory::free(ptr_light_triangle_cumulative_probability);
+	if (ptr_light_triangle_mesh_indices.ptr) CUDAMemory::free(ptr_light_triangle_mesh_indices);
+	if (ptr_punctual_lights.ptr) CUDAMemory::free(ptr_punctual_lights);
+	if (ray_buffer_shadow.max_distance.ptr) ray_buffer_shadow.free();
 
 	ray_buffer_trace_0.free();
 	ray_buffer_trace_1.free();
@@ -70,6 +71,27 @@ void Pathtracer::cuda_free() {
 	material_ray_buffers.clear();
 
 	CUDAMemory::free(ptr_material_ray_buffers);
+}
+
+void Pathtracer::upload_punctual_lights() {
+	if (ptr_punctual_lights.ptr) CUDAMemory::free(ptr_punctual_lights);
+
+	if (scene.punctual_lights.size() == 0) {
+		global_punctual_lights.set_value(CUDAMemory::Ptr<CUDAPunctualLight> { });
+		global_punctual_light_count.set_value(0);
+		return;
+	}
+
+	Array<CUDAPunctualLight> cuda_lights(scene.punctual_lights.size());
+	for (size_t i = 0; i < scene.punctual_lights.size(); ++i) {
+		const PunctualLight & light = scene.punctual_lights[i];
+		cuda_lights[i].position_and_radius = Vector4(light.position.x, light.position.y, light.position.z, light.radius);
+		cuda_lights[i].color = Vector4(light.color.x, light.color.y, light.color.z, 0.0f);
+	}
+
+	ptr_punctual_lights = CUDAMemory::malloc(cuda_lights);
+	global_punctual_lights.set_value(ptr_punctual_lights);
+	global_punctual_light_count.set_value(int(scene.punctual_lights.size()));
 }
 
 void Pathtracer::init_module() {
@@ -581,7 +603,8 @@ void Pathtracer::update(float delta, Allocator * frame_allocator) {
 		bool lights_changed = had_lights ^ scene.has_lights;
 		if (lights_changed) {
 			if (scene.has_lights) {
-				ray_buffer_shadow.init(BATCH_SIZE);
+				// A path can emit one area-light and one punctual-light shadow ray.
+				ray_buffer_shadow.init(BATCH_SIZE * (scene.punctual_lights.size() > 0 ? 2 : 1));
 
 				invalidated_scene = true;
 			} else {
@@ -655,6 +678,12 @@ void Pathtracer::update(float delta, Allocator * frame_allocator) {
 	}
 
 	Integrator::update(delta, frame_allocator);
+
+	if (invalidated_light_sampling) {
+		calc_light_power(frame_allocator);
+		calc_light_mesh_weights();
+		invalidated_light_sampling = false;
+	}
 
 	if (invalidated_light_mesh_weights) {
 		calc_light_mesh_weights();
@@ -964,6 +993,7 @@ void Pathtracer::render() {
 			total_frame_time = 0;
 			//rebuild bvh
 			rebuild_bvh8_from_counters();
+			invalidated_light_sampling = true;
 		}
 		else if (measuringFrame < counter_limit) {
 			total_frame_time += CUDAEvent::time_elapsed_between(event_pool.pool[0], event_pool.pool[event_pool.num_used - 1]);

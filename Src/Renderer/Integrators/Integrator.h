@@ -66,6 +66,8 @@ struct Integrator {
 	bool invalidated_camera     = true;
 	bool invalidated_gpu_config = true;
 	bool invalidated_aovs       = true;
+	//jichan add
+	bool invalidated_light_sampling = false;
 
 	int screen_width;
 	int screen_height;
