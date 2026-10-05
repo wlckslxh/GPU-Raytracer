@@ -7,6 +7,15 @@
 #include "Mesh.h"
 #include "Sky.h"
 
+// Analytic point lights imported from KHR_lights_punctual.  `radius` is the
+// project-specific attenuation range used by the Vulkan renderer, not a mesh
+// radius.
+struct PunctualLight {
+	Vector3 position;
+	Vector3 color;
+	float   radius = 1.0f;
+};
+
 struct Scene {
 	Allocator * allocator = nullptr;
 
@@ -14,6 +23,7 @@ struct Scene {
 
 	Camera      camera;
 	Array<Mesh> meshes;
+	Array<PunctualLight> punctual_lights;
 	Sky         sky;
 
 	bool has_diffuse    = false;

@@ -2,6 +2,7 @@
 #include <vector>
 #include "Renderer/Integrators/Integrator.h"
 #include "Renderer/Material.h"
+#include "Math/Vector4.h"
 
 struct TraceBuffer {
 	CUDAVector3_SoA ray_origin;
@@ -232,10 +233,18 @@ struct Pathtracer final : Integrator {
 
 	// Light Sampling
 	CUDAModule::Global global_lights_total_weight;
+	CUDAModule::Global global_punctual_lights;
+	CUDAModule::Global global_punctual_light_count;
 
 	CUDAMemory::Ptr<int>   ptr_light_triangle_indices;
 	CUDAMemory::Ptr<float> ptr_light_triangle_cumulative_probability;
 	CUDAMemory::Ptr<int>   ptr_light_triangle_mesh_indices;
+
+	struct CUDAPunctualLight {
+		Vector4 position_and_radius;
+		Vector4 color;
+	};
+	CUDAMemory::Ptr<CUDAPunctualLight> ptr_punctual_lights;
 
 	struct LightTriangleData {
 		int triangle_index;
@@ -288,4 +297,5 @@ struct Pathtracer final : Integrator {
 
 	void calc_light_power(Allocator * frame_allocator);
 	void calc_light_mesh_weights();
+	void upload_punctual_lights();
 };

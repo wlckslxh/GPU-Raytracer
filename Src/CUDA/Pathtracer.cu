@@ -474,6 +474,8 @@ __device__ void next_event_estimation(
 	float3       geometric_normal,
 	float3       throughput
 ) {
+	if (light_triangle_count <= 0) return;
+
 	float2 rand_light    = random<SampleDimension::NEE_LIGHT>   (pixel_index, bounce, sample_index);
 	float2 rand_triangle = random<SampleDimension::NEE_TRIANGLE>(pixel_index, bounce, sample_index);
 
@@ -552,6 +554,66 @@ __device__ void next_event_estimation(
 		illumination.z,
 		__int_as_float(pixel_index)
 	);
+}
+
+__device__ float punctual_light_attenuation(float distance, float radius, float3 color) {
+	// Match the attenuation function and default parameters (alpha=.6,
+	// beta=.8, gamma=.2) used by the Vulkan renderer.
+	constexpr float alpha = 0.6f;
+	constexpr float beta  = 0.8f;
+	constexpr float gamma = 0.2f;
+	if (distance <= radius * alpha) {
+		float m = distance / (alpha * radius);
+		float n = 1.0f - 1.0f / beta;
+		return fminf(fmaxf(1.0f / (m * n * (m - 2.0f) + 1.0f), 0.001f), 1.0f);
+	}
+
+	float m = alpha * radius;
+	float n = 1.0f / beta;
+	float intensity = fmaxf(color.x, fmaxf(color.y, color.z));
+	float denominator = (1.0f / square(radius - m)) * (intensity / gamma - n) * square(distance - m) + n;
+	return fminf(fmaxf(1.0f / denominator, 0.001f), 1.0f);
+}
+
+template<typename BSDF>
+__device__ void next_event_estimation_punctual(
+	int          pixel_index,
+	int          bounce,
+	int          sample_index,
+	const BSDF & bsdf,
+	float3       hit_point,
+	float3       normal,
+	float3       geometric_normal,
+	float3       throughput
+) {
+	if (punctual_light_count <= 0) return;
+
+	float u = random<SampleDimension::NEE_PUNCTUAL>(pixel_index, bounce, sample_index).x;
+	int light_index = min(int(u * punctual_light_count), punctual_light_count - 1);
+	PunctualLight light = punctual_lights[light_index];
+
+	float3 light_position = make_float3(light.position_and_radius);
+	float3 to_light = light_position - hit_point;
+	float distance_to_light = length(to_light);
+	float radius = light.position_and_radius.w;
+	if (distance_to_light <= 0.0f || distance_to_light > radius) return;
+	to_light /= distance_to_light;
+
+	float3 bsdf_value;
+	float bsdf_pdf;
+	if (!bsdf.eval(to_light, dot(to_light, normal), bsdf_value, bsdf_pdf)) return;
+
+	float3 color = make_float3(light.color);
+	float3 illumination = throughput * bsdf_value * color
+		* (punctual_light_attenuation(distance_to_light, radius, color) * float(punctual_light_count));
+
+	hit_point = ray_origin_epsilon_offset(hit_point, to_light, geometric_normal);
+	int shadow_ray_index = atomicAdd(&buffer_sizes.shadow[bounce], 1);
+	ray_buffer_shadow.traversal_data.ray_origin.set(shadow_ray_index, hit_point);
+	ray_buffer_shadow.traversal_data.ray_direction.set(shadow_ray_index, to_light);
+	ray_buffer_shadow.traversal_data.max_distance[shadow_ray_index] = distance_to_light;
+	ray_buffer_shadow.illumination_and_pixel_index[shadow_ray_index] = make_float4(
+		illumination.x, illumination.y, illumination.z, __int_as_float(pixel_index));
 }
 
 template<typename BSDF, PackedMaterialBuffer * packed_material_buffer>
@@ -712,8 +774,13 @@ __device__ void shade_material(int bounce, int sample_index, int buffer_size) {
 	}
 
 	// Next Event Estimation
-	if (config.enable_next_event_estimation && lights_total_weight > 0.0f && bsdf.allow_nee()) {
-		next_event_estimation(pixel_index, bounce, sample_index, bsdf, medium_id, hit_point, normal, geometric_normal, throughput);
+	if (config.enable_next_event_estimation && bsdf.allow_nee()) {
+		if (lights_total_weight > 0.0f) {
+			next_event_estimation(pixel_index, bounce, sample_index, bsdf, medium_id, hit_point, normal, geometric_normal, throughput);
+		}
+		if (punctual_light_count > 0) {
+			next_event_estimation_punctual(pixel_index, bounce, sample_index, bsdf, hit_point, normal, geometric_normal, throughput);
+		}
 	}
 
 	// Sample BSDF
