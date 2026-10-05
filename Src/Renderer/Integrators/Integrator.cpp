@@ -11,6 +11,7 @@
 
 #include "Util/BlueNoise.h"
 
+#if 0 // Replaced by scene-manifest camera presets and keyframes in Scene.
 namespace {
 
 constexpr uint32_t CAMERA_VIEWS_PER_SET = 200;
@@ -61,43 +62,43 @@ struct CameraPath {
 //	return { keys, uint32_t(sizeof(keys) / sizeof(keys[0])) };
 //}
 //works on sponza
+CameraPath camera_path_set_0() {
+	static const CameraKeyframe keys[] = {
+	{ Vector3(1.146842, 2.282518, 1.067378), Vector3(-22.524939, 58.374725, 0.000000) },
+	{ Vector3(-6.497121, 1.637290, -1.421643), Vector3(10.925017, -102.249245, 0.000000) },
+	{ Vector3(-0.917174, 2.109086, -1.786313), Vector3(1.799964, -176.325180, 0.000000)},
+	{ Vector3(4.291043, 4.683933, -1.352913), Vector3(-20.874960, 106.026215, 0.000000) },
+	};
+	return { keys, uint32_t(sizeof(keys) / sizeof(keys[0])) };
+}
+CameraPath camera_path_set_1() { return {}; }
+CameraPath camera_path_set_2() { return {}; }
+//works on Bistro
 //CameraPath camera_path_set_0() {
 //	static const CameraKeyframe keys[] = {
-//	{ Vector3(1.146842, 2.282518, 1.067378), Vector3(-22.524939, 58.374725, 0.000000) },
-//	{ Vector3(-6.497121, 1.637290, -1.421643), Vector3(10.925017, -102.249245, 0.000000) },
-//	{ Vector3(-0.917174, 2.109086, -1.786313), Vector3(1.799964, -176.325180, 0.000000)},
-//	{ Vector3(4.291043, 4.683933, -1.352913), Vector3(-20.874960, 106.026215, 0.000000) },
+//	{ Vector3(-21.893288, 6.842527, -2.459376), Vector3(-4.600013, -98.299873, 0.000000) },
+//	{ Vector3(8.839227, 6.072428, -37.519112), Vector3(0.449993, -38.674301, 0.000000) },
 //	};
 //	return { keys, uint32_t(sizeof(keys) / sizeof(keys[0])) };
 //}
-//CameraPath camera_path_set_1() { return {}; }
-//CameraPath camera_path_set_2() { return {}; }
-//works on Bistro
-CameraPath camera_path_set_0() {
-	static const CameraKeyframe keys[] = {
-	{ Vector3(-21.893288, 6.842527, -2.459376), Vector3(-4.600013, -98.299873, 0.000000) },
-	{ Vector3(8.839227, 6.072428, -37.519112), Vector3(0.449993, -38.674301, 0.000000) },
-	};
-	return { keys, uint32_t(sizeof(keys) / sizeof(keys[0])) };
-}
-CameraPath camera_path_set_1() {
-	static const CameraKeyframe keys[] = {
-	{ Vector3(-18.383568, 5.615447, 2.809033), Vector3(0.799987, -12.249468, 0.000000) },
-	{ Vector3(-35.837536, 6.236717, -21.725618), Vector3(1.274987, 31.375515, 0.000000) },
-	{ Vector3(-34.883411, 6.171125, -20.961159), Vector3(-4.575020, -189.474716, 0.000000)},
-	{ Vector3(-19.832129, 5.600855, -4.562343), Vector3(-0.625018, -137.775665, 0.000000) },
-	};
-	return { keys, uint32_t(sizeof(keys) / sizeof(keys[0])) };
-}
-CameraPath camera_path_set_2() {
-	static const CameraKeyframe keys[] = {
-	{ Vector3(-5.386296, 5.540370, 10.017820), Vector3(0.424982, -115.525543, 0.000000) },
-	{ Vector3(47.297512, 9.931281, 23.472252), Vector3(-6.725034, -133.800293, 0.000000) },
-	{ Vector3(51.998558, 9.831911, 51.906136), Vector3(-2.850019, -60.673332, 0.000000)},
-	{ Vector3(78.159660, 13.776148, 63.380791), Vector3(-10.750002, 13.327049, 0.000000) },
-	};
-	return { keys, uint32_t(sizeof(keys) / sizeof(keys[0])) };
-}
+//CameraPath camera_path_set_1() {
+//	static const CameraKeyframe keys[] = {
+//	{ Vector3(-18.383568, 5.615447, 2.809033), Vector3(0.799987, -12.249468, 0.000000) },
+//	{ Vector3(-35.837536, 6.236717, -21.725618), Vector3(1.274987, 31.375515, 0.000000) },
+//	{ Vector3(-34.883411, 6.171125, -20.961159), Vector3(-4.575020, -189.474716, 0.000000)},
+//	{ Vector3(-19.832129, 5.600855, -4.562343), Vector3(-0.625018, -137.775665, 0.000000) },
+//	};
+//	return { keys, uint32_t(sizeof(keys) / sizeof(keys[0])) };
+//}
+//CameraPath camera_path_set_2() {
+//	static const CameraKeyframe keys[] = {
+//	{ Vector3(-5.386296, 5.540370, 10.017820), Vector3(0.424982, -115.525543, 0.000000) },
+//	{ Vector3(47.297512, 9.931281, 23.472252), Vector3(-6.725034, -133.800293, 0.000000) },
+//	{ Vector3(51.998558, 9.831911, 51.906136), Vector3(-2.850019, -60.673332, 0.000000)},
+//	{ Vector3(78.159660, 13.776148, 63.380791), Vector3(-10.750002, 13.327049, 0.000000) },
+//	};
+//	return { keys, uint32_t(sizeof(keys) / sizeof(keys[0])) };
+//}
 CameraPath camera_path_set_3() { return {}; }
 CameraPath camera_path_set_4() { return {}; }
 
@@ -150,6 +151,7 @@ void apply_camera_path_set(Camera & camera, uint64_t global_view_index) {
 }
 
 } // namespace
+#endif
 
 void Integrator::init_globals() {
 	global_camera      = cuda_module.get_global("camera");
@@ -631,14 +633,12 @@ void Integrator::update(float delta, Allocator * frame_allocator) {
 	}
 	
 	if (rebuildingState == collectingCounter) {
-		apply_camera_path_set(scene.camera, bvh_counter_dumped);
-		invalidated_camera = true;
+		invalidated_camera |= scene.set_camera_keyframe_sample(bvh_counter_dumped, counter_limit);
 	}
 	else if ((rebuildingState == previousBVHFps ||
 		rebuildingState == rebuildBVHFps) &&
 		measuringFrame < counter_limit) {
-		apply_camera_path_set(scene.camera, measuringFrame);
-		invalidated_camera = true;
+		invalidated_camera |= scene.set_camera_keyframe_sample(measuringFrame, counter_limit);
 	}
 		
 	scene.camera.update(delta);
