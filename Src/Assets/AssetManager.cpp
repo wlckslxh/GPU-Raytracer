@@ -122,6 +122,44 @@ Handle<MeshData> AssetManager::add_mesh_data(Array<Triangle> triangles, Array<in
 	return mesh_data_handle;
 }
 
+Handle<MeshData> AssetManager::add_mesh_data(String source_filename, Array<Triangle> triangles, Array<int> material_ids) {
+	ASSERT(material_ids.size() == 0 || material_ids.size() == triangles.size());
+	Handle<MeshData> mesh_data_handle = new_mesh_data();
+
+	ThreadPool::submit([this, source_filename = std::move(source_filename), triangles = std::move(triangles), material_ids = std::move(material_ids), mesh_data_handle]() mutable {
+		MeshData mesh_data = { };
+		mesh_data.triangles = std::move(triangles);
+		mesh_data.material_ids = std::move(material_ids);
+
+		bool loaded_bvh8 = false;
+		if (cpu_config.bvh_type == BVHType::BVH8) {
+			String bvh8_filename = BVHLoader::get_bvh8_filename(source_filename.view(), nullptr);
+			OwnPtr<BVH8> bvh8 = make_owned<BVH8>();
+			loaded_bvh8 = BVHLoader::try_to_load_bvh8(source_filename, bvh8_filename, mesh_data.triangles, bvh8.get());
+			if (loaded_bvh8) {
+				mesh_data.bvh = std::move(bvh8);
+			}
+		}
+
+		if (!loaded_bvh8) {
+			BVH2 bvh = BVH::create_from_triangles(mesh_data.triangles);
+			mesh_data.bvh = BVH::create_from_bvh2(std::move(bvh));
+
+			if (cpu_config.bvh_type == BVHType::BVH8) {
+				String bvh8_filename = BVHLoader::get_bvh8_filename(source_filename.view(), nullptr);
+				BVHLoader::save_bvh8(bvh8_filename, mesh_data.triangles, *static_cast<const BVH8 *>(mesh_data.bvh.get()));
+			}
+		}
+
+		{
+			MutexLock mutex(mesh_datas_mutex);
+			get_mesh_data(mesh_data_handle) = std::move(mesh_data);
+		}
+	});
+
+	return mesh_data_handle;
+}
+
 Handle<Material> AssetManager::add_material(Material material) {
 	Handle<Material> material_handle = { int(materials.size()) };
 	materials.emplace_back(std::move(material));
