@@ -739,12 +739,14 @@ void Integrator::rebuild_bvh8_from_counters() {
 		rebuilder.rebuild();
 		rebuilder.serialize();
 	}
-
+	printf("Tlas rebuild statistic\n\tpromotion : %ull\n\tmerge : %ull\n\n", rebuilder.promotionCount, rebuilder.mergeCount);
 	tlas = std::move(newTlas);
 
 	//rebuild blases
 	{
 		ScopeTimer timer("BLAS rebuild time"_sv);
+		uint64_t totalPromotionCount = 0;
+		uint64_t totlaMergeCount = 0;
 		for (int i = 0; i < scene.asset_manager.mesh_datas.size(); i++) {
 			MeshData& meshData = scene.asset_manager.mesh_datas[i];
 
@@ -755,9 +757,12 @@ void Integrator::rebuild_bvh8_from_counters() {
 
 			rebuilder.rebuild();
 			rebuilder.serialize();
-
+			const BVH8& newBlasObject = static_cast<const BVH8>(*newBlas.get());
 			meshData.bvh = std::move(newBlas);
+			totalPromotionCount += rebuilder.promotionCount;
+			totlaMergeCount += rebuilder.mergeCount;
 		}
+		printf("Blas rebuild statistic\n\tpromotion : %ull\n\tmerge : %ull\n\n", totalPromotionCount, totlaMergeCount);
 	}
 
 	//mesh도 재조정 필요

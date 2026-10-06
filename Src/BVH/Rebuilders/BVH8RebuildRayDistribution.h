@@ -55,6 +55,8 @@ struct BVH8RebuildRayDistribution {
 	uint32_t globalNodeOffset;
 	uint32_t globalObjectOffset;
 	Array<serializePendingNode> serializeQueue;
+	uint64_t mergeCount = 0;
+	uint64_t promotionCount = 0;
 
 	BVH8RebuildRayDistribution(const BVH8& oldBvh, const Array<uint64_t>& nodeCounter, const Array<uint64_t>& objectCounter, BVH8& newBvh, uint32_t globalNodeOffset, uint32_t globalObjectOffset, bool is_tlas) : oldBvh(oldBvh), nodeCounter(nodeCounter), objectCounter(objectCounter), newBvh(newBvh), globalNodeOffset(globalNodeOffset), globalObjectOffset(globalObjectOffset), is_tlas(is_tlas) {	
 		initializeWorkingBVH();

@@ -132,6 +132,7 @@ void BVH8RebuildRayDistribution::promote_most_visited_grandchild(WorkingNode8& w
 		candidateNode.child[candidateMaxChild].aabb = AABB::create_empty();
 		break;
 	}
+	promotionCount++;
 }
 
 //생각해 볼 조건 0. internal box node만 건드릴지, 삼각형도 건드릴지
@@ -249,6 +250,7 @@ void BVH8RebuildRayDistribution::rebuild() {
 				updatedWorkingNode.child[minBChild].aabb = AABB::create_empty();
 				updatedWorkingNode.childCount++;
 
+				mergeCount++;
 				//merge 이후 promotion 진행
 				promote_most_visited_grandchild(updatedWorkingNode);
 			}
