@@ -268,7 +268,6 @@ void BVH8RebuildRayDistribution::rebuild() {
 
 //rebuild한 working bvh를 원래 bvh 구조로 되돌림
 void BVH8RebuildRayDistribution::serialize() {
-	
 	//고려사항
 	//1. internal child 연속 배치
 	//2. internal child meta/imask 재생성

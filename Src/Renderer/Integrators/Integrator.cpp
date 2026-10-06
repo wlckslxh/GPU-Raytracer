@@ -734,25 +734,30 @@ void Integrator::rebuild_bvh8_from_counters() {
 	const BVH8& oldTlas = *static_cast<const BVH8*>(tlas.get());
 	OwnPtr<BVH8> newTlas = make_owned<BVH8>(PinnedAllocator::instance());
 	BVH8RebuildRayDistribution rebuilder(oldTlas, host_counters, host_mesh_counters, *newTlas.get(), 0, 0, true);
-
-	rebuilder.rebuild();
-	rebuilder.serialize();
+	{
+		ScopeTimer timer("TLAS rebuild time"_sv);
+		rebuilder.rebuild();
+		rebuilder.serialize();
+	}
 
 	tlas = std::move(newTlas);
 
 	//rebuild blases
-	for (int i = 0; i < scene.asset_manager.mesh_datas.size(); i++) {
-		MeshData& meshData = scene.asset_manager.mesh_datas[i];
-		
-		const BVH8& oldBlas = *static_cast<const BVH8*>(meshData.bvh.get());
-		OwnPtr<BVH8> newBlas = make_owned<BVH8>(PinnedAllocator::instance());
-		//의미상 triangle offset 대신 gpu packed triangle offset인 init_geometry에서 사용한 mesh_data_index_offset을 쓰는게 맞다고 함
-		BVH8RebuildRayDistribution rebuilder(oldBlas, host_counters, host_triangle_counters, *newBlas.get(), mesh_data_bvh_offsets[i], mesh_data_index_offsets[i], false);
+	{
+		ScopeTimer timer("BLAS rebuild time"_sv);
+		for (int i = 0; i < scene.asset_manager.mesh_datas.size(); i++) {
+			MeshData& meshData = scene.asset_manager.mesh_datas[i];
 
-		rebuilder.rebuild();
-		rebuilder.serialize();
+			const BVH8& oldBlas = *static_cast<const BVH8*>(meshData.bvh.get());
+			OwnPtr<BVH8> newBlas = make_owned<BVH8>(PinnedAllocator::instance());
+			//의미상 triangle offset 대신 gpu packed triangle offset인 init_geometry에서 사용한 mesh_data_index_offset을 쓰는게 맞다고 함
+			BVH8RebuildRayDistribution rebuilder(oldBlas, host_counters, host_triangle_counters, *newBlas.get(), mesh_data_bvh_offsets[i], mesh_data_index_offsets[i], false);
 
-		meshData.bvh = std::move(newBlas);
+			rebuilder.rebuild();
+			rebuilder.serialize();
+
+			meshData.bvh = std::move(newBlas);
+		}
 	}
 
 	//mesh도 재조정 필요

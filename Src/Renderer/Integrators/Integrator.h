@@ -17,6 +17,7 @@
 
 //jichan add
 #include "BVH/Rebuilders/BVH8RebuildRayDistribution.h"
+#include "Core/Timer.h"
 
 
 // Mirror CUDA vector types
