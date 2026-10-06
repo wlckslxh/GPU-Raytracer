@@ -358,6 +358,10 @@ __device__ inline void bvh8_trace_shadow(ShadowTraversalData * traversal_data, i
 				unsigned relative_index = __popc(hits_imask & ~(0xffffffff << slot_index));
 
 				unsigned child_node_index = child_index_base + relative_index;
+				
+				if(*counter_mode){
+					atomicAdd(&bvh_counter[child_node_index], 1ull);
+				}
 
 				float4 node_0 = bvh8_nodes[child_node_index].node_0;
 				float4 node_1 = bvh8_nodes[child_node_index].node_1;
@@ -390,6 +394,9 @@ __device__ inline void bvh8_trace_shadow(ShadowTraversalData * traversal_data, i
 					triangle_group.y &= ~(1 << mesh_offset);
 
 					mesh_id = triangle_group.x + mesh_offset;
+					if(counter_mode){
+						atomicAdd(&mesh_counter[mesh_id], 1ull);
+					}
 
 					if (triangle_group.y != 0) {
 						stack_push(shared_stack_bvh8, stack, stack_size, triangle_group);
@@ -423,6 +430,9 @@ __device__ inline void bvh8_trace_shadow(ShadowTraversalData * traversal_data, i
 					}
 
 					int triangle_index = msb(triangle_group.y);
+					if(counter_mode){
+						atomicAdd(&triangle_counter[triangle_index], 1ull);
+					}
 					triangle_group.y &= ~(1 << triangle_index);
 
 					if (triangle_intersect_shadow(triangle_group.x + triangle_index, ray, max_distance)) {
