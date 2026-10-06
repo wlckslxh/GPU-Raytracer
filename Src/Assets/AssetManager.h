@@ -45,6 +45,7 @@ public:
 	Handle<MeshData> add_mesh_data(String filename, String bvh_filename, FallbackLoader fallback_loader);
 	Handle<MeshData> add_mesh_data(Array<Triangle> triangles);
 	Handle<MeshData> add_mesh_data(Array<Triangle> triangles, Array<int> material_ids);
+	Handle<MeshData> add_mesh_data(String source_filename, Array<Triangle> triangles, Array<int> material_ids);
 
 	Handle<Material> add_material(Material material);
 
