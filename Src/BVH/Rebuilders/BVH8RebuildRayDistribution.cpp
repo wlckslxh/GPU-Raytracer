@@ -72,7 +72,7 @@ void BVH8RebuildRayDistribution::collapse() {
 
 }
 
-void BVH8RebuildRayDistribution::promote_most_visited_grandchild(WorkingNode8& workingNode) {
+bool BVH8RebuildRayDistribution::promote_most_visited_grandchild(WorkingNode8& workingNode) {
 	uint64_t maxCounter = 0;
 	uint8_t maxChild = UINT8_MAX;
 	//child8 중 누가 ray 비중이 제일 큰지 탐색
@@ -83,56 +83,105 @@ void BVH8RebuildRayDistribution::promote_most_visited_grandchild(WorkingNode8& w
 			maxChild = i;
 		}
 	}
-	ASSERT(maxChild != UINT8_MAX);
+	if (maxChild == UINT8_MAX) return false;
+
+	//WorkingNode8& candidateNode = workingBvh[workingNode.child[maxChild].index];
+	//uint64_t candidateCountSum = 0;
+	//uint64_t candidateMaxCounter = 0;
+	//uint8_t candidateMaxChild = UINT8_MAX;
+	////ray 비중이 제일 큰 child에서, ray 비중이 제일 큰 child 탐색
+	//for (int i = 0; i < 8; i++) {
+	//	const Child& child = candidateNode.child[i];
+	//	if (child.kind == Empty) continue;
+	//	//aabb child node와 object child node 분리해서 counter 셀 필요 있음
+	//	candidateCountSum += child.visitCount;
+	//	if (candidateMaxChild == UINT8_MAX || candidateMaxCounter < child.visitCount) {
+	//		candidateMaxCounter = child.visitCount;
+	//		candidateMaxChild = i;
+	//	}
+	//}
+	//ASSERT(candidateMaxChild != UINT8_MAX);
+	////해당 grandchild를 위로 올리면 현 child의 aabb가 얼마나 줄어드는지 계산하여 올리기
+	////일단 지금은 aabb 따로 고려 안 하고 ray 비중만 갖고 무조건 올리는걸로 실험
+	//AABB candidateAABB = AABB::create_empty();
+	//for (int i = 0; i < 8; i++) {
+	//	const Child& child = candidateNode.child[i];
+	//	if (i != candidateMaxChild && child.kind != Empty) {
+	//		candidateAABB.expand(child.aabb);
+	//	}
+	//}
 
 	WorkingNode8& candidateNode = workingBvh[workingNode.child[maxChild].index];
-	uint64_t candidateCountSum = 0;
-	uint64_t candidateMaxCounter = 0;
+	float candidateHeuristic = -50.0f;
 	uint8_t candidateMaxChild = UINT8_MAX;
-	//ray 비중이 제일 큰 child에서, ray 비중이 제일 큰 child 탐색
+	uint64_t childCountSum = 0;
+	AABB candidateAABB = AABB::create_empty();
+	const float candidateSA = workingNode.child[maxChild].aabb.surface_area();
 	for (int i = 0; i < 8; i++) {
 		const Child& child = candidateNode.child[i];
 		if (child.kind == Empty) continue;
-		//aabb child node와 object child node 분리해서 counter 셀 필요 있음
-		candidateCountSum += child.visitCount;
-		if (candidateMaxChild == UINT8_MAX || candidateMaxCounter < child.visitCount) {
-			candidateMaxCounter = child.visitCount;
-			candidateMaxChild = i;
-		}
+		childCountSum += child.visitCount;
 	}
-	ASSERT(candidateMaxChild != UINT8_MAX);
-	//해당 grandchild를 위로 올리면 현 child의 aabb가 얼마나 줄어드는지 계산하여 올리기
-	//일단 지금은 aabb 따로 고려 안 하고 ray 비중만 갖고 무조건 올리는걸로 실험
-	AABB candidateAABB = AABB::create_empty();
+	if (candidateNode.childCount + candidateNode.objectCount == 0) return false;
+	if (!(candidateSA > 0.0f) || !std::isfinite(candidateSA)) return false;
+
 	for (int i = 0; i < 8; i++) {
 		const Child& child = candidateNode.child[i];
-		if (i != candidateMaxChild && child.kind != Empty) {
-			candidateAABB.expand(child.aabb);
+		if (child.kind == Empty) continue;
+		AABB candidateAABBAfter = AABB::create_empty();
+		for (int j = 0; j < 8; j++) {
+			const Child& child = candidateNode.child[j];
+			if (i == j || child.kind == Empty) continue;
+			candidateAABBAfter.expand(child.aabb);
+		}
+		// A sole remaining child leaves an empty candidate AABB. That is a
+		// valid promotion: the candidate node is removed below. Its spatial
+		// cost is therefore zero rather than infinity.
+		const float rayShare = childCountSum != 0 ? float(child.visitCount) / float(childCountSum) : 0.0f;
+		const float remainingSurface = candidateAABBAfter.is_empty() ? 0.0f : candidateAABBAfter.surface_area();
+		const float heuristic = rayShare - remainingSurface / candidateSA;
+		if (candidateMaxChild == UINT8_MAX || heuristic > candidateHeuristic) {
+			candidateMaxChild = i;
+			candidateAABB = candidateAABBAfter;
+			candidateHeuristic = heuristic;
 		}
 	}
+	if (candidateMaxChild == UINT8_MAX) return false;
 
+	int emptySlot = INVALID;
 	for (int i = 0; i < 8; i++) {
-		if (workingNode.child[i].kind != Empty) continue;
-
-		const Child promotedChild = candidateNode.child[candidateMaxChild];
-		workingNode.child[i] = promotedChild;
-
-		if (promotedChild.kind == Internal) {
-			++workingNode.childCount;
-			--candidateNode.childCount;
-		} else {
-			++workingNode.objectCount;
-			--candidateNode.objectCount;
+		if (workingNode.child[i].kind == Empty) {
+			emptySlot = i;
+			break;
 		}
+	}
+	if (emptySlot == INVALID) return false;
 
-		candidateNode.child[candidateMaxChild].kind = Empty;
-		candidateNode.child[candidateMaxChild].index = INVALID_NODE;
-		candidateNode.child[candidateMaxChild].primitiveCount = 0;
+	const Child promotedChild = candidateNode.child[candidateMaxChild];
+	workingNode.child[emptySlot] = promotedChild;
+
+	if (promotedChild.kind == Internal) {
+		++workingNode.childCount;
+		--candidateNode.childCount;
+	} else {
+		++workingNode.objectCount;
+		--candidateNode.objectCount;
+	}
+
+	candidateNode.child[candidateMaxChild] = Child{};
+	candidateNode.child[candidateMaxChild].aabb = AABB::create_empty();
+
+	if (candidateNode.childCount + candidateNode.objectCount == 0) {
+		workingNode.child[maxChild] = Child{};
+		workingNode.child[maxChild].aabb = AABB::create_empty();
+
+		--workingNode.childCount;
+	}
+	else {
 		workingNode.child[maxChild].aabb = candidateAABB;
-		candidateNode.child[candidateMaxChild].aabb = AABB::create_empty();
-		break;
 	}
 	promotionCount++;
+	return true;
 }
 
 //생각해 볼 조건 0. internal box node만 건드릴지, 삼각형도 건드릴지
@@ -160,8 +209,10 @@ void BVH8RebuildRayDistribution::rebuild() {
 		//단, 후보 node에서 뭘 올릴지는 상관없이 ray count 기반으로 수행하는게 맞다고 봄
 		//여기서 생각해볼게, 무턱대고 올리기 보다는 SA 변화량이랑 ray count 감소율(예측)을 통해 수치를 잡는게 좋다고 생각함
 		if (workingNode.childCount + workingNode.objectCount < 8) {
+			/*while (workingNode.childCount + workingNode.objectCount < 8) {
+				if (!promote_most_visited_grandchild(workingNode)) break;
+			}*/
 			promote_most_visited_grandchild(workingNode);
-
 			//조정 이후 현재 node의 child들 push
 			for (int slot = 7; slot > -1; slot--) {
 				const Child& child = workingNode.child[slot];
@@ -217,7 +268,7 @@ void BVH8RebuildRayDistribution::rebuild() {
 			}
 			bool doMerge = counterSum != 0 && (((float)(minACounter + minBCounter) / counterSum) < 0.25) && (((float)maxCounter / counterSum) > 0.3);
 
-			if (doMerge) {
+			if (doMerge && 0) {
 				//merge node를 만들면, child가 둘 뿐이므로 무조건 빈 틈이 생겨 promotion을 진행하는데, 이걸 냅둬도 되나...?
 				WorkingNode8 mergeNode;
 				mergeNode.child[0] = workingNode.child[minAChild];
@@ -298,10 +349,12 @@ void BVH8RebuildRayDistribution::serialize() {
 		uint32_t activeChild[8] = {};
 		for (int i = 0; i < 8; i++) {
 			if (workingNode.child[i].kind != Empty) {
+				ASSERT(workingNode.child[i].aabb.is_valid());
 				nodeAabb.expand(workingNode.child[i].aabb);
 				activeChild[activeCount++] = i;
 			}
 		}
+		ASSERT(activeCount == workingNode.childCount + workingNode.objectCount);
 		ASSERT(nodeAabb.is_valid());
 
 		outputNode.p = nodeAabb.min;
@@ -379,6 +432,7 @@ void BVH8RebuildRayDistribution::serialize() {
 
 		uint32_t reorderedChild[8] = { INVALID_NODE, INVALID_NODE, INVALID_NODE, INVALID_NODE, INVALID_NODE, INVALID_NODE, INVALID_NODE, INVALID_NODE };
 		for (int i = 0; i < activeCount; i++) {
+			ASSERT(assignment[i] != INVALID_NODE && assignment[i] < 8);
 			reorderedChild[assignment[i]] = activeChild[i];
 		}
 

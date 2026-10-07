@@ -64,7 +64,7 @@ struct BVH8RebuildRayDistribution {
 
 	uint64_t GetVisitCount(const WorkingNode8& node);
 	void initializeWorkingBVH();
-	void promote_most_visited_grandchild(WorkingNode8& workingNode);
+	bool promote_most_visited_grandchild(WorkingNode8& workingNode);
 	void collapse();
 	void rebuild();
 	void serialize();

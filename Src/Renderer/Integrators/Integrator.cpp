@@ -739,7 +739,7 @@ void Integrator::rebuild_bvh8_from_counters() {
 		rebuilder.rebuild();
 		rebuilder.serialize();
 	}
-	printf("Tlas rebuild statistic\n\tpromotion : %ull\n\tmerge : %ull\n\n", rebuilder.promotionCount, rebuilder.mergeCount);
+	printf("Tlas rebuild statistic\n\tpromotion : %llu\n\tmerge : %llu\n\n", rebuilder.promotionCount, rebuilder.mergeCount);
 	tlas = std::move(newTlas);
 
 	//rebuild blases
@@ -762,7 +762,7 @@ void Integrator::rebuild_bvh8_from_counters() {
 			totalPromotionCount += rebuilder.promotionCount;
 			totlaMergeCount += rebuilder.mergeCount;
 		}
-		printf("Blas rebuild statistic\n\tpromotion : %ull\n\tmerge : %ull\n\n", totalPromotionCount, totlaMergeCount);
+		printf("Blas rebuild statistic\n\tpromotion : %llu\n\tmerge : %llu\n\n", totalPromotionCount, totlaMergeCount);
 	}
 
 	//mesh도 재조정 필요
