@@ -394,7 +394,7 @@ __device__ inline void bvh8_trace_shadow(ShadowTraversalData * traversal_data, i
 					triangle_group.y &= ~(1 << mesh_offset);
 
 					mesh_id = triangle_group.x + mesh_offset;
-					if(counter_mode){
+					if(*counter_mode){
 						atomicAdd(&mesh_counter[mesh_id], 1ull);
 					}
 
@@ -430,7 +430,7 @@ __device__ inline void bvh8_trace_shadow(ShadowTraversalData * traversal_data, i
 					}
 
 					int triangle_index = msb(triangle_group.y);
-					if(counter_mode){
+					if(*counter_mode){
 						atomicAdd(&triangle_counter[triangle_index], 1ull);
 					}
 					triangle_group.y &= ~(1 << triangle_index);
