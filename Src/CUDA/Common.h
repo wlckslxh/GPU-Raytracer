@@ -66,9 +66,11 @@ struct GPUConfig {
 	float sigma_l = 10.0f;
 };
 
-// Rendering is performance in batches of BATCH_SIZE pixels
-// Larger batches are more efficient, but also require more GPU memory
-#define BATCH_SIZE (1080 * 720)
+// Rendering is performed in batches of BATCH_SIZE pixels.  Keep this aligned
+// with the default CUDA render target in Config.h (not the SDL window size),
+// so the default 2560x1440 render is processed in one batch.  Larger batches
+// reduce per-batch launch/synchronization overhead, but require more GPU memory.
+#define BATCH_SIZE (2560 * 1440)
 
 
 // Raytracing

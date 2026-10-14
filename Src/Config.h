@@ -64,6 +64,21 @@ struct CPUConfig {
 
 	int bvh_optimizer_max_time        = 60000; // Time limit in milliseconds
 	int bvh_optimizer_max_num_batches = 1000;
+
+	// Runtime controls for BVH8RebuildRayDistribution. Keep these in CPUConfig
+	// so an external sweep can change them through command-line arguments
+	// without editing and recompiling the rebuild header.
+	bool  rebuild_merge_on                = true;
+	bool  rebuild_promotion_on            = true;
+	bool  rebuild_promotion_loop          = false;
+	bool  rebuild_merge_aabb_aware        = true;
+	bool  rebuild_promotion_aabb_aware    = true;
+	float rebuild_merge_threshold         = 0.25f;
+	float rebuild_max_counter_threshold   = 0.3f;
+	// Optional suffix appended to rebuild statistics CSV filenames. This keeps
+	// remeasurements separate from an earlier run with identical controls.
+	String rebuild_statistics_suffix;
+	bool  exit_after_rebuild_statistics   = false;
 };
 
 inline CPUConfig cpu_config = { };

@@ -53,6 +53,7 @@ struct Scene {
 
 	bool has_diffuse    = false;
 	bool has_plastic    = false;
+	bool has_pbr_metallic_roughness = false;
 	bool has_dielectric = false;
 	bool has_conductor  = false;
 	bool has_lights     = false;

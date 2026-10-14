@@ -59,6 +59,8 @@ struct BSDFDiffuse {
 		return material.texture_id != INVALID;
 	}
 
+	__device__ bool is_alpha_masked_out() const { return false; }
+
 	__device__ bool allow_nee() const {
 		return true;
 	}
@@ -184,8 +186,130 @@ struct BSDFPlastic {
 		return material.texture_id != INVALID;
 	}
 
+	__device__ bool is_alpha_masked_out() const { return false; }
+
 	__device__ bool allow_nee() const {
 		return true;
+	}
+};
+
+// glTF 2.0 core metallic-roughness material.  This is deliberately a
+// two-lobe metallic workflow (diffuse + GGX reflection), not a full Disney
+// principled model.  eval() and sample() share the same mixture PDF so NEE/MIS
+// sees the identical distribution used for path continuation.
+struct BSDFPBRMetallicRoughness {
+	static constexpr bool HAS_ALBEDO = true;
+
+	int pixel_index;
+	int bounce;
+	int sample_index;
+
+	float3 tangent;
+	float3 bitangent;
+	float3 normal;
+	float3 omega_i;
+
+	MaterialPBRMetallicRoughness material;
+	float3 base_color;
+	float  metallic;
+	float  linear_roughness;
+	bool   alpha_masked_out;
+
+	__device__ void init(int bounce, bool entering_material, int material_id) {
+		material = material_as_pbr_metallic_roughness(material_id);
+	}
+
+	__device__ float3 fresnel(float cos_theta) const {
+		float3 f0 = lerp(make_float3(0.04f), base_color, metallic);
+		float one_minus_cos = 1.0f - clamp(cos_theta, 0.0f, 1.0f);
+		return f0 + (make_float3(1.0f) - f0) * (one_minus_cos * one_minus_cos * one_minus_cos * one_minus_cos * one_minus_cos);
+	}
+
+	// Metallic surfaces have no diffuse lobe.  For dielectrics, use the
+	// incident Fresnel reflectance as the lobe-selection probability, clamped
+	// away from zero to avoid starving the specular lobe.
+	__device__ float specular_probability() const {
+		float3 incident_fresnel = fresnel(omega_i.z);
+		float dielectric_probability = clamp(luminance(incident_fresnel.x, incident_fresnel.y, incident_fresnel.z), 0.05f, 0.95f);
+		return lerp(dielectric_probability, 1.0f, metallic);
+	}
+
+	__device__ void calc_albedo(int bounce, int pixel_index, float3 & throughput, float2 tex_coord, const TextureLOD & lod) {
+		float4 base_color_texture = sample_texture(bounce, material.base_color_texture_id, tex_coord, lod);
+		base_color = material.base_color * make_float3(base_color_texture);
+		alpha_masked_out = material.alpha_masked && material.alpha * base_color_texture.w < material.alpha_cutoff;
+
+		float4 metallic_roughness = sample_texture(bounce, material.metallic_roughness_texture_id, tex_coord, lod);
+		// glTF defines G = perceptual roughness and B = metallic.
+		metallic = clamp(material.metallic * metallic_roughness.z, 0.0f, 1.0f);
+		linear_roughness = clamp(material.linear_roughness * metallic_roughness.y, 0.001f, 1.0f);
+
+		if (bounce == 0) {
+			aov_framebuffer_set(AOVType::ALBEDO, pixel_index, make_float4(base_color));
+		}
+	}
+
+	__device__ bool eval_local(float3 omega_o, float3 & bsdf, float & pdf) const {
+		if (omega_i.z <= 0.0f || omega_o.z <= 0.0f) return false;
+
+		float3 omega_m = normalize(omega_i + omega_o);
+		if (omega_m.z <= 0.0f) return false;
+
+		float alpha = roughness_to_alpha(linear_roughness);
+		float i_dot_m = clamp(dot(omega_i, omega_m), 0.0f, 1.0f);
+		float3 F = fresnel(i_dot_m);
+		float D = ggx_D(omega_m, alpha, alpha);
+		float G1 = ggx_G1(omega_i, alpha, alpha);
+		float G2 = ggx_G2(omega_o, omega_i, omega_m, alpha, alpha);
+
+		// Both terms are BRDF * cos(theta_o), matching the renderer's existing
+		// BSDF interface and throughput update.
+		float3 specular = F * (G2 * D / (4.0f * omega_i.z));
+		float3 diffuse = (1.0f - metallic) * (make_float3(1.0f) - fresnel(omega_i.z)) *
+			(make_float3(1.0f) - fresnel(omega_o.z)) * base_color * (omega_o.z * ONE_OVER_PI);
+
+		float pdf_specular = G1 * D / (4.0f * omega_i.z);
+		float pdf_diffuse = omega_o.z * ONE_OVER_PI;
+
+		bsdf = diffuse + specular;
+		pdf = lerp(pdf_diffuse, pdf_specular, specular_probability());
+		return pdf_is_valid(pdf);
+	}
+
+	__device__ bool eval(float3 to_light, float cos_theta_o, float3 & bsdf, float & pdf) const {
+		if (cos_theta_o <= 0.0f) return false;
+		return eval_local(world_to_local(to_light, tangent, bitangent, normal), bsdf, pdf);
+	}
+
+	__device__ bool sample(float3 & throughput, int & medium_id, float3 & direction_out, float & pdf) const {
+		float random_lobe = random<SampleDimension::BSDF_0>(pixel_index, bounce, sample_index).x;
+		float2 random_direction = random<SampleDimension::BSDF_1>(pixel_index, bounce, sample_index);
+
+		float3 omega_o;
+		if (random_lobe < specular_probability()) {
+			float alpha = roughness_to_alpha(linear_roughness);
+			float3 omega_m = sample_visible_normals_ggx(omega_i, alpha, alpha, random_direction.x, random_direction.y);
+			omega_o = reflect_direction(omega_i, omega_m);
+		} else {
+			omega_o = sample_cosine_weighted_direction(random_direction.x, random_direction.y);
+		}
+
+		float3 bsdf;
+		if (!eval_local(omega_o, bsdf, pdf)) return false;
+
+		throughput *= bsdf / pdf;
+		direction_out = local_to_world(omega_o, tangent, bitangent, normal);
+		return true;
+	}
+
+	__device__ bool has_texture() const {
+		return material.base_color_texture_id != INVALID || material.metallic_roughness_texture_id != INVALID;
+	}
+
+	__device__ bool is_alpha_masked_out() const { return alpha_masked_out; }
+
+	__device__ bool allow_nee() const {
+		return linear_roughness >= ROUGHNESS_CUTOFF || metallic < 1.0f;
 	}
 };
 
@@ -397,6 +521,8 @@ struct BSDFDielectric {
 		return false;
 	}
 
+	__device__ bool is_alpha_masked_out() const { return false; }
+
 	__device__ bool allow_nee() const {
 		return material.linear_roughness >= ROUGHNESS_CUTOFF;
 	}
@@ -518,6 +644,8 @@ struct BSDFConductor {
 	__device__ bool has_texture() const {
 		return false;
 	}
+
+	__device__ bool is_alpha_masked_out() const { return false; }
 
 	__device__ bool allow_nee() const {
 		return material.linear_roughness >= ROUGHNESS_CUTOFF;

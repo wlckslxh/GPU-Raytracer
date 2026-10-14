@@ -109,6 +109,18 @@ struct Integrator {
 			float   linear_roughness;
 		} plastic;
 		struct {
+			Vector3 base_color;
+			int     base_color_texture_id;
+			float   metallic;
+			float   linear_roughness;
+			int     metallic_roughness_texture_id;
+			int     alpha_masked;
+			float   alpha;
+			float   alpha_cutoff;
+			float   padding_0;
+			float   padding_1;
+		} pbr_metallic_roughness;
+		struct {
 			int   medium_id;
 			float ior;
 			float linear_roughness;
@@ -174,6 +186,21 @@ struct Integrator {
 	uint64_t bvh_counter_dumped = 0;
 	CUDAMemory::Ptr<bool> ptr_counter_mode;
 	Array<int> mesh_data_index_offsets;
+	struct CounterTotals {
+		uint64_t node_visits = 0;
+		uint64_t triangle_tests = 0;
+		uint64_t mesh_visits = 0;
+	};
+	Array<CounterTotals> counter_totals;
+	struct RebuildMetadataRecord {
+		uint32_t iteration = 0;
+		int bvh_index = INVALID; // -1 for TLAS, otherwise MeshData/BLAS index
+		bool is_tlas = false;
+		BVH8RebuildMetadata metadata;
+	};
+	Array<RebuildMetadataRecord> rebuild_metadata_records;
+	Array<float> rebuild_fps;
+	String rebuild_control_tag;
 	//jichan add end
 
 	CUDAMemory::Ptr<int>       ptr_mesh_bvh_root_indices;
@@ -222,12 +249,16 @@ struct Integrator {
 		invalid,
 		collectingCounter,
 		previousBVHFps,
-		rebuildBVHFps
+		rebuildBVHFps,
+		collectingRebuiltCounter
 	};
-	bool counter_mode = true;
+	bool counter_mode = false;
 	uint8_t rebuildingState = counter_mode;
 	uint64_t measuringFrame = 0;
 	uint64_t counter_limit = 200ull;
+	uint32_t rebuild_generation = 0;
+	uint32_t rebuild_iteration_limit = 1;
+	bool rebuild_statistics_written = false;
 	bool dump_bvh_counter = false;
 	float total_frame_time = 0;
 	//jichan add end
@@ -296,6 +327,14 @@ struct Integrator {
 
 	//jichan add
 	void rebuild_bvh8_from_counters();
+	void clear_counter_buffers();
+	void resize_bvh_counter_buffer(size_t node_count);
+	void begin_counter_collection();
+	void capture_counter_totals();
+	void record_rebuild_metadata(uint32_t iteration, bool is_tlas, int bvh_index, const BVH8RebuildRayDistribution& rebuilder);
+	void record_rebuild_fps(uint32_t iteration, float fps);
+	void write_rebuild_statistics() const;
+	bool has_written_rebuild_statistics() const { return rebuild_statistics_written; }
 
 	virtual void update(float delta, Allocator * frame_allocator);
 	virtual void render() = 0;

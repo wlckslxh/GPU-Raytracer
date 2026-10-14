@@ -15,6 +15,7 @@ struct Material {
 		LIGHT,
 		DIFFUSE,
 		PLASTIC,
+		PBR_METALLIC_ROUGHNESS,
 		DIELECTRIC,
 		CONDUCTOR
 	};
@@ -26,6 +27,15 @@ struct Material {
 
 	Vector3         diffuse = Vector3(1.0f, 1.0f, 1.0f);
 	Handle<Texture> texture_handle;
+	// glTF 2.0 metallic-roughness workflow. The texture stores roughness in G
+	// and metallic in B; diffuse/texture_handle remain the base-color inputs.
+	float           metallic = 0.0f;
+	Handle<Texture> metallic_roughness_texture_handle;
+
+	// glTF alpha coverage. BLEND currently falls back to deterministic cutout.
+	float alpha        = 1.0f;
+	float alpha_cutoff = 0.5f;
+	bool  alpha_masked = false;
 
 	Handle<Medium> medium_handle;
 	float          index_of_refraction = 1.33f;

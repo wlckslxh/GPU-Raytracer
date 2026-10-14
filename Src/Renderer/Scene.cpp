@@ -197,6 +197,7 @@ bool Scene::set_camera_keyframe_sample(uint64_t sample_index, uint64_t sample_co
 void Scene::check_materials() {
 	has_diffuse    = false;
 	has_plastic    = false;
+	has_pbr_metallic_roughness = false;
 	has_dielectric = false;
 	has_conductor  = false;
 	has_lights     = false;
@@ -207,6 +208,7 @@ void Scene::check_materials() {
 		switch (material.type) {
 			case Material::Type::DIFFUSE:    has_diffuse    = true; break;
 			case Material::Type::PLASTIC:    has_plastic    = true; break;
+			case Material::Type::PBR_METALLIC_ROUGHNESS: has_pbr_metallic_roughness = true; break;
 			case Material::Type::DIELECTRIC: has_dielectric = true; break;
 			case Material::Type::CONDUCTOR:  has_conductor  = true; break;
 			case Material::Type::LIGHT:      has_lights    |= material.is_light(); break;

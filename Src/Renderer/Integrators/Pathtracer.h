@@ -124,6 +124,7 @@ struct BufferSizes {
 	int trace     [MAX_BOUNCES];
 	int diffuse   [MAX_BOUNCES];
 	int plastic   [MAX_BOUNCES];
+	int pbr_metallic_roughness[MAX_BOUNCES];
 	int dielectric[MAX_BOUNCES];
 	int conductor [MAX_BOUNCES];
 	int shadow    [MAX_BOUNCES];
@@ -135,6 +136,7 @@ struct BufferSizes {
 		memset(trace,               0, sizeof(trace));
 		memset(diffuse,             0, sizeof(diffuse));
 		memset(plastic,             0, sizeof(plastic));
+		memset(pbr_metallic_roughness, 0, sizeof(pbr_metallic_roughness));
 		memset(dielectric,          0, sizeof(dielectric));
 		memset(conductor,           0, sizeof(conductor));
 		memset(shadow,              0, sizeof(shadow));
@@ -158,6 +160,7 @@ struct Pathtracer final : Integrator {
 	CUDAKernel kernel_sort;
 	CUDAKernel kernel_material_diffuse;
 	CUDAKernel kernel_material_plastic;
+	CUDAKernel kernel_material_pbr_metallic_roughness;
 	CUDAKernel kernel_material_dielectric;
 	CUDAKernel kernel_material_conductor;
 	CUDAKernel kernel_trace_shadow_bvh2;

@@ -103,6 +103,17 @@ static void parse_args(const Array<StringView> & args, Allocator * allocator) {
 	options.emplace_back(StringView { }, "sah-leaf"_sv,   "Sets the SAH cost of a leaf BVH node"_sv,                                                                  1, [](const Array<StringView> & args, size_t i) { cpu_config.sah_cost_leaf = parse_arg_float(args[i + 1]); });
 	options.emplace_back(StringView { }, "sbvh-alpha"_sv, "Sets the SBVH alpha constant. An alpha of 1 results in a regular BVH, alpha of 0 results in full SBVH"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.sbvh_alpha    = parse_arg_float(args[i + 1]); });
 
+	options.emplace_back(StringView { }, "rebuild-merge"_sv, "Enables or disables BVH rebuild merging"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.rebuild_merge_on             = parse_arg_bool(args[i + 1]); });
+	options.emplace_back(StringView { }, "rebuild-promotion"_sv, "Enables or disables BVH rebuild promotion"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.rebuild_promotion_on         = parse_arg_bool(args[i + 1]); });
+	options.emplace_back(StringView { }, "rebuild-promotion-loop"_sv, "Enables repeated promotion into available child slots"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.rebuild_promotion_loop       = parse_arg_bool(args[i + 1]); });
+	options.emplace_back(StringView { }, "rebuild-merge-aabb-aware"_sv, "Enables AABB-aware rebuild merging"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.rebuild_merge_aabb_aware     = parse_arg_bool(args[i + 1]); });
+	options.emplace_back(StringView { }, "rebuild-promotion-aabb-aware"_sv, "Enables AABB-aware rebuild promotion"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.rebuild_promotion_aabb_aware = parse_arg_bool(args[i + 1]); });
+	options.emplace_back(StringView { }, "rebuild-merge-threshold"_sv, "Sets the sibling ray-share threshold used for rebuild merging"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.rebuild_merge_threshold      = parse_arg_float(args[i + 1]); });
+	options.emplace_back(StringView { }, "rebuild-max-counter-threshold"_sv, "Sets the maximum-child ray-share threshold used for rebuild merging"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.rebuild_max_counter_threshold = parse_arg_float(args[i + 1]); });
+	options.emplace_back(StringView { }, "rebuild-statistics-suffix"_sv, "Appends a suffix to rebuild statistics CSV filenames"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.rebuild_statistics_suffix      = args[i + 1]; });
+
+	options.emplace_back(StringView { }, "exit-after-rebuild-statistics"_sv, "Exits after the final rebuild statistics CSV files are written"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.exit_after_rebuild_statistics = parse_arg_bool(args[i + 1]); });
+
 	options.emplace_back(StringView { }, "mipmap"_sv,     "Enables or disables texture mipmapping"_sv,                                                     1, [](const Array<StringView> & args, size_t i) { gpu_config.enable_mipmapping = parse_arg_bool(args[i + 1]); });
 	options.emplace_back(StringView { }, "mip-filter"_sv, "Sets the downsampling filter for creating mipmaps: Supported options: box, lanczos, kaiser"_sv, 1, [](const Array<StringView> & args, size_t i) {
 		if (args[i + 1] == "box") {

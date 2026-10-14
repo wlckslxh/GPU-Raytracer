@@ -1,5 +1,8 @@
 #include "Integrator.h"
 
+#include <filesystem>
+#include <string>
+
 #include <GL/glew.h>
 
 #include <Imgui/imgui.h>
@@ -10,6 +13,37 @@
 #include "Core/Allocators/PinnedAllocator.h"
 
 #include "Util/BlueNoise.h"
+
+namespace {
+
+String make_rebuild_control_tag(const BVH8RebuildRayDistribution& rebuilder) {
+	char buffer[256];
+	snprintf(buffer, sizeof(buffer), "%c-%c-%c-%c-%c-%.6g-%.6g%s%s",
+		rebuilder.mergeOn ? 'T' : 'F',
+		rebuilder.promotionOn ? 'T' : 'F',
+		rebuilder.promotionLoop ? 'T' : 'F',
+		rebuilder.mergeAABBAware ? 'T' : 'F',
+		rebuilder.promotionAABBAware ? 'T' : 'F',
+		rebuilder.mergeThreshold,
+		rebuilder.maxCounterThreshold,
+		cpu_config.rebuild_statistics_suffix.is_empty() ? "" : "-",
+		cpu_config.rebuild_statistics_suffix.c_str());
+	return String(buffer);
+}
+
+std::filesystem::path make_statistics_filename(const char* directory, const String& control_tag) {
+	std::string scene_name = "scene";
+	if (cpu_config.scene_filenames.size() != 0) {
+		const std::filesystem::path scene_path(cpu_config.scene_filenames[0].data());
+		const std::string stem = scene_path.stem().string();
+		if (!stem.empty()) scene_name = stem;
+	}
+
+	return std::filesystem::path("statistics") / directory /
+		(scene_name + "_" + std::string(control_tag.data(), control_tag.size()) + ".csv");
+}
+
+}
 
 #if 0 // Replaced by scene-manifest camera presets and keyframes in Scene.
 namespace {
@@ -538,6 +572,154 @@ void Integrator::free_geometry() {
 	CUDAMemory::free(ptr_triangle_material_ids);
 }
 
+void Integrator::clear_counter_buffers() {
+	ASSERT(ptr_bvh_counter.ptr);
+	ASSERT(ptr_triangle_counter.ptr);
+	ASSERT(ptr_mesh_counter.ptr);
+
+	CUDAMemory::memset_async(ptr_bvh_counter, 0, bvh_counter_count, memory_stream);
+	CUDAMemory::memset_async(ptr_triangle_counter, 0, triangle_counter_count, memory_stream);
+	CUDAMemory::memset_async(ptr_mesh_counter, 0, mesh_counter_count, memory_stream);
+}
+
+void Integrator::resize_bvh_counter_buffer(size_t node_count) {
+	ASSERT(node_count != 0);
+
+	if (ptr_bvh_counter.ptr) CUDAMemory::free(ptr_bvh_counter);
+	ptr_bvh_counter = CUDAMemory::malloc<uint64_t>(node_count);
+	bvh_counter_count = node_count;
+
+	cuda_module.get_global("bvh_counter").set_value(ptr_bvh_counter);
+	clear_counter_buffers();
+}
+
+void Integrator::begin_counter_collection() {
+	clear_counter_buffers();
+	bvh_counter_dumped = 0;
+	counter_mode = true;
+	CUDAMemory::memset_async(ptr_counter_mode, counter_mode, 1, memory_stream);
+}
+
+void Integrator::capture_counter_totals() {
+	// Traversal runs on the default stream, whereas counter-buffer maintenance
+	// uses memory_stream. Both must finish before the host copies begin.
+	CUDACALL(cuStreamSynchronize(nullptr));
+	CUDACALL(cuStreamSynchronize(memory_stream));
+
+	Array<uint64_t> host_node_counters(bvh_counter_count);
+	Array<uint64_t> host_triangle_counters(triangle_counter_count);
+	Array<uint64_t> host_mesh_counters(mesh_counter_count);
+
+	CUDAMemory::memcpy(host_node_counters.data(), ptr_bvh_counter, bvh_counter_count);
+	CUDAMemory::memcpy(host_triangle_counters.data(), ptr_triangle_counter, triangle_counter_count);
+	CUDAMemory::memcpy(host_mesh_counters.data(), ptr_mesh_counter, mesh_counter_count);
+
+	CounterTotals totals;
+	for (uint64_t count : host_node_counters) totals.node_visits += count;
+	for (uint64_t count : host_triangle_counters) totals.triangle_tests += count;
+	for (uint64_t count : host_mesh_counters) totals.mesh_visits += count;
+
+	counter_totals.push_back(totals);
+	const CounterTotals& baseline = counter_totals[0];
+	const double node_ratio = baseline.node_visits ? double(totals.node_visits) / double(baseline.node_visits) : NAN;
+	const double triangle_ratio = baseline.triangle_tests ? double(totals.triangle_tests) / double(baseline.triangle_tests) : NAN;
+	const double mesh_ratio = baseline.mesh_visits ? double(totals.mesh_visits) / double(baseline.mesh_visits) : NAN;
+
+	printf("Counter totals generation %u: nodes=%llu (%.6f), triangles=%llu (%.6f), meshes=%llu (%.6f)\n",
+		rebuild_generation,
+		static_cast<unsigned long long>(totals.node_visits), node_ratio,
+		static_cast<unsigned long long>(totals.triangle_tests), triangle_ratio,
+		static_cast<unsigned long long>(totals.mesh_visits), mesh_ratio);
+}
+
+void Integrator::record_rebuild_metadata(uint32_t iteration, bool is_tlas, int bvh_index, const BVH8RebuildRayDistribution& rebuilder) {
+	if (rebuild_control_tag.is_empty()) {
+		rebuild_control_tag = make_rebuild_control_tag(rebuilder);
+	}
+
+	RebuildMetadataRecord record;
+	record.iteration = iteration;
+	record.is_tlas = is_tlas;
+	record.bvh_index = bvh_index;
+	record.metadata = rebuilder.get_metadata();
+	rebuild_metadata_records.push_back(record);
+}
+
+void Integrator::record_rebuild_fps(uint32_t iteration, float fps) {
+	rebuild_fps.resize_if_smaller(size_t(iteration) + 1);
+	rebuild_fps[iteration] = fps;
+}
+
+void Integrator::write_rebuild_statistics() const {
+	if (rebuild_control_tag.is_empty()) return;
+
+	const std::filesystem::path fps_filename = make_statistics_filename("fps", rebuild_control_tag);
+	// Keep the existing output directory spelling for compatibility with the
+	// experiment scripts and previously requested CSV layout.
+	const std::filesystem::path metadata_filename = make_statistics_filename("meatadata", rebuild_control_tag);
+	std::error_code error;
+	std::filesystem::create_directories(fps_filename.parent_path(), error);
+	if (error) {
+		printf("Failed to create statistics directory: %s\n", error.message().c_str());
+		return;
+	}
+	error.clear();
+	std::filesystem::create_directories(metadata_filename.parent_path(), error);
+	if (error) {
+		printf("Failed to create statistics directory: %s\n", error.message().c_str());
+		return;
+	}
+
+	FILE* fps_file = nullptr;
+	fopen_s(&fps_file, fps_filename.string().c_str(), "wb");
+	if (!fps_file) {
+		printf("Failed to write FPS statistics: %s\n", fps_filename.string().c_str());
+		return;
+	}
+	fprintf(fps_file, "iteration,fps\n");
+	for (size_t iteration = 0; iteration < rebuild_fps.size(); ++iteration) {
+		fprintf(fps_file, "%zu,%.9g\n", iteration, rebuild_fps[iteration]);
+	}
+	fclose(fps_file);
+
+	FILE* metadata_file = nullptr;
+	fopen_s(&metadata_file, metadata_filename.string().c_str(), "wb");
+	if (!metadata_file) {
+		printf("Failed to write rebuild metadata: %s\n", metadata_filename.string().c_str());
+		return;
+	}
+	fprintf(metadata_file,
+		"iteration,bvh_type,bvh_index,old_node_count,new_node_count,"
+		"promotion_count,promotion_heuristic_avg,promotion_heuristic_min,promotion_heuristic_max,"
+		"promotion_ray_share_avg,promotion_ray_share_min,promotion_ray_share_max,"
+		"promotion_remain_sa_avg,promotion_remain_sa_min,promotion_remain_sa_max,"
+		"merge_count,merge_heuristic_avg,merge_heuristic_min,merge_heuristic_max,"
+		"merge_ray_share_avg,merge_ray_share_min,merge_ray_share_max,"
+		"merge_after_sa_avg,merge_after_sa_min,merge_after_sa_max\n");
+	for (const RebuildMetadataRecord& record : rebuild_metadata_records) {
+		const BVH8RebuildMetadata& metadata = record.metadata;
+		fprintf(metadata_file,
+			"%u,%s,%d,%llu,%llu,%llu,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,"
+			"%llu,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g\n",
+			record.iteration,
+			record.is_tlas ? "TLAS" : "BLAS",
+			record.bvh_index,
+			static_cast<unsigned long long>(metadata.old_node_count),
+			static_cast<unsigned long long>(metadata.new_node_count),
+			static_cast<unsigned long long>(metadata.promotion_count),
+			metadata.promotion_heuristic_avg, metadata.promotion_heuristic_min, metadata.promotion_heuristic_max,
+			metadata.promotion_ray_share_avg, metadata.promotion_ray_share_min, metadata.promotion_ray_share_max,
+			metadata.promotion_remain_sa_avg, metadata.promotion_remain_sa_min, metadata.promotion_remain_sa_max,
+			static_cast<unsigned long long>(metadata.merge_count),
+			metadata.merge_heuristic_avg, metadata.merge_heuristic_min, metadata.merge_heuristic_max,
+			metadata.merge_ray_share_avg, metadata.merge_ray_share_min, metadata.merge_ray_share_max,
+			metadata.merge_after_sa_avg, metadata.merge_after_sa_min, metadata.merge_after_sa_max);
+	}
+	fclose(metadata_file);
+
+	printf("Wrote rebuild statistics: %s and %s\n", fps_filename.string().c_str(), metadata_filename.string().c_str());
+}
+
 void Integrator::free_sky() {
 	CUDAMemory::free_array(sky_array);
 	CUDAMemory::free_texture(sky_texture);
@@ -632,7 +814,8 @@ void Integrator::update(float delta, Allocator * frame_allocator) {
 		build_tlas();
 	}
 	
-	if (rebuildingState == collectingCounter) {
+	if (rebuildingState == collectingCounter ||
+		rebuildingState == collectingRebuiltCounter) {
 		invalidated_camera |= scene.set_camera_keyframe_sample(bvh_counter_dumped, counter_limit);
 	}
 	else if ((rebuildingState == previousBVHFps ||
@@ -720,6 +903,8 @@ void Integrator::update(float delta, Allocator * frame_allocator) {
 }
 
 void Integrator::rebuild_bvh8_from_counters() {
+	const uint32_t next_rebuild_iteration = rebuild_generation + 1;
+
 	//get counters
 	Array<uint64_t> host_counters(bvh_counter_count);
 	CUDAMemory::memcpy<uint64_t>(host_counters.data(), ptr_bvh_counter, bvh_counter_count);
@@ -733,13 +918,17 @@ void Integrator::rebuild_bvh8_from_counters() {
 	//rebuild tlas
 	const BVH8& oldTlas = *static_cast<const BVH8*>(tlas.get());
 	OwnPtr<BVH8> newTlas = make_owned<BVH8>(PinnedAllocator::instance());
-	BVH8RebuildRayDistribution rebuilder(oldTlas, host_counters, host_mesh_counters, *newTlas.get(), 0, 0, true);
+	BVH8RebuildRayDistribution rebuilder(oldTlas, host_counters, host_mesh_counters, *newTlas.get(), 0, 0, true,
+		cpu_config.rebuild_merge_on, cpu_config.rebuild_promotion_on, cpu_config.rebuild_promotion_loop,
+		cpu_config.rebuild_merge_aabb_aware, cpu_config.rebuild_promotion_aabb_aware,
+		cpu_config.rebuild_merge_threshold, cpu_config.rebuild_max_counter_threshold);
 	{
 		ScopeTimer timer("TLAS rebuild time"_sv);
 		rebuilder.rebuild();
 		rebuilder.serialize();
+		rebuilder.printMetadata();
+		record_rebuild_metadata(next_rebuild_iteration, true, INVALID, rebuilder);
 	}
-	printf("Tlas rebuild statistic\n\tpromotion : %llu\n\tmerge : %llu\n\n", rebuilder.promotionCount, rebuilder.mergeCount);
 	tlas = std::move(newTlas);
 
 	//rebuild blases
@@ -751,18 +940,22 @@ void Integrator::rebuild_bvh8_from_counters() {
 			MeshData& meshData = scene.asset_manager.mesh_datas[i];
 
 			const BVH8& oldBlas = *static_cast<const BVH8*>(meshData.bvh.get());
-			OwnPtr<BVH8> newBlas = make_owned<BVH8>(PinnedAllocator::instance());
+			OwnPtr<BVH8> newBlas = make_owned<BVH8>();
 			//의미상 triangle offset 대신 gpu packed triangle offset인 init_geometry에서 사용한 mesh_data_index_offset을 쓰는게 맞다고 함
-			BVH8RebuildRayDistribution rebuilder(oldBlas, host_counters, host_triangle_counters, *newBlas.get(), mesh_data_bvh_offsets[i], mesh_data_index_offsets[i], false);
+			BVH8RebuildRayDistribution rebuilder(oldBlas, host_counters, host_triangle_counters, *newBlas.get(), mesh_data_bvh_offsets[i], mesh_data_index_offsets[i], false,
+				cpu_config.rebuild_merge_on, cpu_config.rebuild_promotion_on, cpu_config.rebuild_promotion_loop,
+				cpu_config.rebuild_merge_aabb_aware, cpu_config.rebuild_promotion_aabb_aware,
+				cpu_config.rebuild_merge_threshold, cpu_config.rebuild_max_counter_threshold);
 
 			rebuilder.rebuild();
 			rebuilder.serialize();
+			rebuilder.printMetadata();
+			record_rebuild_metadata(next_rebuild_iteration, false, i, rebuilder);
 			const BVH8& newBlasObject = static_cast<const BVH8>(*newBlas.get());
 			meshData.bvh = std::move(newBlas);
 			totalPromotionCount += rebuilder.promotionCount;
 			totlaMergeCount += rebuilder.mergeCount;
 		}
-		printf("Blas rebuild statistic\n\tpromotion : %llu\n\tmerge : %llu\n\n", totalPromotionCount, totlaMergeCount);
 	}
 
 	//mesh도 재조정 필요
@@ -871,6 +1064,10 @@ void Integrator::rebuild_bvh8_from_counters() {
 	CUDAMemory::memcpy_async(ptr_mesh_transforms, pinned_mesh_transforms, scene.meshes.size(), memory_stream);
 	CUDAMemory::memcpy_async(ptr_mesh_transforms_inv, pinned_mesh_transforms_inv, scene.meshes.size(), memory_stream);
 	CUDAMemory::memcpy_async(ptr_mesh_transforms_prev, pinned_mesh_transforms_prev, scene.meshes.size(), memory_stream);
+
+	// A rebuild may change the aggregate BVH8-node count. Recreate and bind
+	// the counter before a later collection pass traverses this new layout.
+	resize_bvh_counter_buffer(aggregated_bvh_node_count);
 
 	printf("Rebuilding bvh with ray distribution has been finished.\n");
 }
