@@ -379,3 +379,5 @@ perf.txt
 # Local experiment scripts and tabular exports
 *.ps1
 *.csv
+*.done
+*.diff
