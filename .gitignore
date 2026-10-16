@@ -360,3 +360,22 @@ imgui.ini
 
 # Performance Report
 perf.txt
+
+# Local rendering assets and experiment output
+# These are downloaded/generated locally; keep the repository's original
+# Data/Sponza and Data/Skies assets tracked.
+/Data/bistroexterior/
+/Data/models_0930/
+/Data/models_0930.zip
+/Data/sponza_multi_blas_transparent/
+/Data/suntemple/
+/BVH_data/
+/Results_1014/
+/statistics_1014/
+/statistics_debug/
+/statistics_loop/
+/DatasuntempleSunTemple.gltf.bvh
+
+# Local experiment scripts and tabular exports
+*.ps1
+*.csv
