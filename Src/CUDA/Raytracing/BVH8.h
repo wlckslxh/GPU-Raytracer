@@ -26,10 +26,10 @@ struct BVH8Node {
 
 __device__ __constant__ const BVH8Node * bvh8_nodes;
 //jichan add
-__device__ __constant__ unsigned long long * bvh_counter;
-__device__ __constant__ unsigned long long * triangle_counter;
-__device__ __constant__ unsigned long long * mesh_counter;
-__device__ __constant__ bool * counter_mode;
+// __device__ __constant__ unsigned long long * bvh_counter;
+// __device__ __constant__ unsigned long long * triangle_counter;
+// __device__ __constant__ unsigned long long * mesh_counter;
+// __device__ __constant__ bool * counter_mode;
 
 __device__ inline unsigned bvh8_node_intersect(
 	const Ray & ray,
@@ -182,9 +182,9 @@ __device__ inline void bvh8_trace(TraversalData * traversal_data, int ray_count,
 
 				unsigned child_node_index = child_index_base + relative_index;
 				//jichan add
-				if(*counter_mode){
-					atomicAdd(&bvh_counter[child_node_index], 1ull);
-				}
+				// if(*counter_mode){
+				// 	atomicAdd(&bvh_counter[child_node_index], 1ull);
+				// }
 				
 
 				float4 node_0 = __ldg(&bvh8_nodes[child_node_index].node_0);
@@ -217,9 +217,9 @@ __device__ inline void bvh8_trace(TraversalData * traversal_data, int ray_count,
 
 					mesh_id = triangle_group.x + mesh_offset;
 					//jichan add
-					if(*counter_mode){
-						atomicAdd(&mesh_counter[mesh_id], 1ull);
-					}
+					// if(*counter_mode){
+					// 	atomicAdd(&mesh_counter[mesh_id], 1ull);
+					// }
 
 					if (triangle_group.y != 0) {
 						stack_push(shared_stack_bvh8, stack, stack_size, triangle_group);
@@ -260,9 +260,9 @@ __device__ inline void bvh8_trace(TraversalData * traversal_data, int ray_count,
 					// Count using the global reordered GPU triangle-buffer index instead.
 					int triangle_id = triangle_group.x + triangle_index;
 					//jichan add
-					if(*counter_mode){
-						atomicAdd(&triangle_counter[triangle_id], 1ull);
-					}
+					// if(*counter_mode){
+					// 	atomicAdd(&triangle_counter[triangle_id], 1ull);
+					// }
 					triangle_intersect(mesh_id, triangle_id, ray, ray_hit);
 				}
 			}

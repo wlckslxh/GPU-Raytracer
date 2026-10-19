@@ -42,6 +42,11 @@ struct BVH2Node {
 };
 
 __device__ __constant__ BVH2Node * bvh2_nodes;
+//jichan add
+__device__ __constant__ unsigned long long * bvh_counter;
+__device__ __constant__ unsigned long long * triangle_counter;
+__device__ __constant__ unsigned long long * mesh_counter;
+__device__ __constant__ bool * counter_mode;
 
 __device__ void bvh2_trace(TraversalData * traversal_data, int ray_count, int * rays_retired) {
 	extern __shared__ int shared_stack_bvh2[];
@@ -94,11 +99,17 @@ __device__ void bvh2_trace(TraversalData * traversal_data, int ray_count, int * 
 			const BVH2Node & node = bvh2_nodes[node_index];
 
 			if (node.aabb.intersects(ray, ray_hit.t)) {
+				if(*counter_mode){
+					atomicAdd(&bvh_counter[node_index], 1ull);
+				}
 				if (node.is_leaf()) {
 					if (tlas_stack_size == INVALID) {
 						tlas_stack_size = stack_size;
 
 						mesh_id = node.first;
+						if(*counter_mode){
+							atomicAdd(&mesh_counter[mesh_id], 1ull);
+						}
 
 						int root_index = bvh_get_mesh_root_index(mesh_id, mesh_has_identity_transform);
 
@@ -111,6 +122,9 @@ __device__ void bvh2_trace(TraversalData * traversal_data, int ray_count, int * 
 						stack_push(shared_stack_bvh2, stack, stack_size, root_index);
 					} else {
 						for (int i = node.first; i < node.first + node.count; i++) {
+							if(*counter_mode){
+								atomicAdd(&triangle_counter[i], 1ull);
+							}
 							triangle_intersect(mesh_id, i, ray, ray_hit);
 						}
 					}
@@ -190,11 +204,17 @@ __device__ void bvh2_trace_shadow(ShadowTraversalData * traveral_data, int ray_c
 			const BVH2Node & node = bvh2_nodes[node_index];
 
 			if (node.aabb.intersects(ray, max_distance)) {
+				if(*counter_mode){
+					atomicAdd(&bvh_counter[node_index], 1ull);
+				}
 				if (node.is_leaf()) {
 					if (tlas_stack_size == INVALID) {
 						tlas_stack_size = stack_size;
 
 						mesh_id = node.first;
+						if(*counter_mode){
+							atomicAdd(&mesh_counter[mesh_id], 1ull);
+						}
 
 						int root_index = bvh_get_mesh_root_index(mesh_id, mesh_has_identity_transform);
 
@@ -208,6 +228,9 @@ __device__ void bvh2_trace_shadow(ShadowTraversalData * traveral_data, int ray_c
 					} else {
 						bool hit = false;
 						for (int i = node.first; i < node.first + node.count; i++) {
+							if(*counter_mode){
+								atomicAdd(&triangle_counter[i], 1ull);
+							}
 							if (triangle_intersect_shadow(i, ray, max_distance)) {
 								hit = true;
 								break;
