@@ -21,6 +21,27 @@ void BVH8Converter::convert() {
 	ASSERT(bvh8.indices.size() == bvh2.indices.size());
 }
 
+void BVH8Converter::convert_greedy() {
+	if (bvh2.nodes.size() == 0) {
+		IO::print("ERROR: BVH8 greedy converter requires a non-empty BVH2!\n"_sv);
+		IO::exit(1);
+	}
+	for (size_t i = 0; i < bvh2.nodes.size(); i++) {
+		if (bvh2.nodes[i].is_leaf() && bvh2.nodes[i].count != 1) {
+			IO::print("ERROR: BVH8 greedy converter expects BVH leaf nodes containing only 1 primitive!\n"_sv);
+			IO::exit(1);
+		}
+	}
+
+	bvh8.indices.clear();
+	bvh8.indices.reserve(bvh2.indices.size());
+	bvh8.nodes.clear();
+	bvh8.nodes.emplace_back(); // Root
+
+	collapse(bvh2.nodes, bvh2.indices, 0, 0, true);
+	ASSERT(bvh8.indices.size() == bvh2.indices.size());
+}
+
 int BVH8Converter::calculate_cost(int node_index, const Array<BVHNode2> & nodes) {
 	const BVHNode2 & node = nodes[node_index];
 
@@ -145,6 +166,32 @@ void BVH8Converter::get_children(int node_index, const Array<BVHNode2> & nodes, 
 	}
 }
 
+void BVH8Converter::get_children_greedy(int node_index, const Array<BVHNode2> & nodes, int children[8], int & child_count) {
+	children[0] = node_index;
+	child_count = 1;
+
+	// Expand the largest available internal subtree until the wide node is full
+	// or all remaining candidates are binary leaves. Ties keep the first slot.
+	while (child_count < 8) {
+		int largest_index = INVALID;
+		float largest_area = -1.0f;
+		for (int i = 0; i < child_count; i++) {
+			const BVHNode2 & child = nodes[children[i]];
+			if (child.is_leaf()) continue;
+			const float area = child.aabb.surface_area();
+			if (largest_index == INVALID || area > largest_area) {
+				largest_area = area;
+				largest_index = i;
+			}
+		}
+		if (largest_index == INVALID) break;
+
+		const int left = nodes[children[largest_index]].left;
+		children[largest_index] = left;
+		children[child_count++] = left + 1;
+	}
+}
+
 void BVH8Converter::order_children(int node_index, const Array<BVHNode2> & nodes, int children[8], int child_count) {
 	Vector3 p = nodes[node_index].aabb.get_center();
 
@@ -227,7 +274,7 @@ int BVH8Converter::count_primitives(int node_index, const Array<BVHNode2> & node
 		count_primitives(node.left + 1, nodes, indices);
 }
 
-void BVH8Converter::collapse(const Array<BVHNode2> & nodes_bvh, const Array<int> & indices_bvh, int node_index_bvh8, int node_index_bvh2) {
+void BVH8Converter::collapse(const Array<BVHNode2> & nodes_bvh, const Array<int> & indices_bvh, int node_index_bvh8, int node_index_bvh2, bool greedy) {
 	BVHNode8 & node = bvh8.nodes[node_index_bvh8];
 	const AABB & aabb = nodes_bvh[node_index_bvh2].aabb;
 
@@ -260,7 +307,11 @@ void BVH8Converter::collapse(const Array<BVHNode2> & nodes_bvh, const Array<int>
 
 	int child_count = 0;
 	int children[8] = { INVALID, INVALID, INVALID, INVALID, INVALID, INVALID, INVALID, INVALID };
-	get_children(node_index_bvh2, nodes_bvh, children, child_count, 0);
+	if (greedy) {
+		get_children_greedy(node_index_bvh2, nodes_bvh, children, child_count);
+	} else {
+		get_children(node_index_bvh2, nodes_bvh, children, child_count, 0);
+	}
 	ASSERT(child_count <= 8);
 
 	order_children(node_index_bvh2, nodes_bvh, children, child_count);
@@ -287,7 +338,10 @@ void BVH8Converter::collapse(const Array<BVHNode2> & nodes_bvh, const Array<int>
 		node.quantized_max_y[i] = byte(ceilf((child_aabb.max.y - node.p.y) * one_over_e.y));
 		node.quantized_max_z[i] = byte(ceilf((child_aabb.max.z - node.p.z) * one_over_e.z));
 
-		switch (decisions[child_index * 7].type) {
+		const Decision::Type child_type = greedy
+			? (nodes_bvh[child_index].is_leaf() ? Decision::Type::LEAF : Decision::Type::INTERNAL)
+			: decisions[child_index * 7].type;
+		switch (child_type) {
 			case Decision::Type::LEAF: {
 				int triangle_count = count_primitives(child_index, nodes_bvh, indices_bvh);
 				ASSERT(triangle_count > 0 && triangle_count <= 3);
@@ -329,7 +383,7 @@ void BVH8Converter::collapse(const Array<BVHNode2> & nodes_bvh, const Array<int>
 		if (child_index == INVALID) continue;
 
 		if (node.imask & (1 << i)) {
-			collapse(nodes_bvh, indices_bvh, node.base_index_child + offset++, child_index);
+			collapse(nodes_bvh, indices_bvh, node.base_index_child + offset++, child_index, greedy);
 		}
 	}
 }
