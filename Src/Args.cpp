@@ -35,6 +35,10 @@ static bool parse_arg_bool(StringView str) {
 	}
 };
 
+static uint64_t parse_arg_nonnegative_u64(StringView str) {
+	return static_cast<uint64_t>(Math::max(parse_arg_int(str), 0));
+}
+
 struct Option {
 	StringView name_short;
 	StringView name_full;
@@ -92,6 +96,15 @@ static void parse_args(const Array<StringView> & args, Allocator * allocator) {
 
 	options.emplace_back(StringView { }, "nee"_sv, "Enables or disables Next Event Estimation"_sv,        1, [](const Array<StringView> & args, size_t i) { gpu_config.enable_next_event_estimation        = parse_arg_bool(args[i + 1]); });
 	options.emplace_back(StringView { }, "mis"_sv, "Enables or disables Multiple Importance Sampling"_sv, 1, [](const Array<StringView> & args, size_t i) { gpu_config.enable_multiple_importance_sampling = parse_arg_bool(args[i + 1]); });
+	options.emplace_back(StringView { }, "bvh2-to-bvh8-experiment"_sv, "Enables or disables the BVH2 to BVH8 conversion experiment"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.enable_bvh2_to_bvh8_experiment = parse_arg_bool(args[i + 1]); });
+	options.emplace_back(StringView { }, "counter-collection"_sv, "Enables or disables BVH2 traversal-counter collection"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.enable_bvh_counter_collection = parse_arg_bool(args[i + 1]); });
+	options.emplace_back(StringView { }, "experiment-fps"_sv, "Enables or disables post-conversion FPS measurement"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.enable_experiment_fps_measurement = parse_arg_bool(args[i + 1]); });
+	options.emplace_back(StringView { }, "exit-after-experiment"_sv, "Exits automatically after the experiment state machine finishes"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.exit_after_experiment = parse_arg_bool(args[i + 1]); });
+	options.emplace_back(StringView { }, "counter-collapse"_sv, "Uses traversal counters in BVH8 collapse cost evaluation"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.enable_counter_collapse = parse_arg_bool(args[i + 1]); });
+	options.emplace_back(StringView { }, "wald-collapse"_sv, "Uses the greedy Wald-style BVH8 collapse instead of the DP collapse"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.enable_wald_collapse = parse_arg_bool(args[i + 1]); });
+	options.emplace_back(StringView { }, "counter-frames"_sv, "Sets the number of camera frames used to collect BVH2 counters"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.counter_collection_frames = parse_arg_nonnegative_u64(args[i + 1]); });
+	options.emplace_back(StringView { }, "fps-warmup-frames"_sv, "Sets the number of rebuilt-BVH warmup frames"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.fps_warmup_frames = parse_arg_nonnegative_u64(args[i + 1]); });
+	options.emplace_back(StringView { }, "fps-frames"_sv, "Sets the number of rebuilt-BVH frames used for FPS measurement"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.fps_measurement_frames = parse_arg_nonnegative_u64(args[i + 1]); });
 
 	options.emplace_back(StringView { }, "force-rebuild"_sv, "BVH will not be loaded from disk but rebuild from scratch"_sv, 0, [](const Array<StringView> & args, size_t i) { cpu_config.bvh_force_rebuild = true; });
 

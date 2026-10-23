@@ -307,4 +307,6 @@ struct Pathtracer final : Integrator {
 	void calc_light_mesh_weights();
 	void upload_punctual_lights();
 	void upload_directional_lights();
+	void begin_bvh8_measurement();
+	void write_experiment_fps_csv() const;
 };

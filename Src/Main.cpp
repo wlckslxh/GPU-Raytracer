@@ -76,7 +76,9 @@ static void init_integrator(OwnPtr<Integrator> & integrator, const Window & wind
 int main(int num_args, char ** args) {
 	Args::parse(num_args, args);
 	if (cpu_config.scene_filenames.size() == 0) {
-		cpu_config.scene_filenames.push_back("Data/models_0930/intelSponza_mod_etc1s/intelSponza_mod.json"_sv);
+		//cpu_config.scene_filenames.push_back("Data/models_0930/bistroexterior_mod_etc1s/bistroexterior_mod.json"_sv);
+		//cpu_config.scene_filenames.push_back("Data/models_0930/intelSponza_mod_etc1s/intelSponza_mod.json"_sv);
+		cpu_config.scene_filenames.push_back("Data/models_0930/sponza_mod_etc1s/sponza_mod.json"_sv);
 	}
 	if (cpu_config.sky_filename.is_empty()) {
 		cpu_config.sky_filename = "Data/Skies/sky_15.hdr"_sv;
@@ -146,6 +148,10 @@ int main(int num_args, char ** args) {
 		integrator->render();
 
 		window.render_framebuffer();
+
+		if (cpu_config.exit_after_experiment && integrator->experiment_finished) {
+			break;
+		}
 
 		if (integrator->sample_index == cpu_config.output_sample_index) {
 			capture_screen(window, *integrator.get(), cpu_config.output_filename);

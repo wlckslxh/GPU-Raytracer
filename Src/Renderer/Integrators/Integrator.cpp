@@ -631,11 +631,28 @@ void Integrator::update(float delta, Allocator * frame_allocator) {
 		build_tlas();
 	}
 	
-	if (counter_mode) {
-		invalidated_camera |= scene.set_camera_keyframe_sample(
-			bvh_counter_dumped,
-			200ull
-		);
+	// Keep counter collection and FPS measurement on independently indexed
+	// camera paths. In particular, the counter frame index is never reused for
+	// the timed run.
+	switch (experiment_state) {
+		case ExperimentState::PREPARING_BVH8:
+			break;
+		case ExperimentState::COLLECTING_COUNTERS:
+			invalidated_camera |= scene.set_camera_keyframe_sample(
+				bvh_counter_dumped, cpu_config.counter_collection_frames);
+			break;
+		case ExperimentState::WARMING_UP_FPS:
+			// Warm up with a fixed camera, then restart the measured path at 0.
+			invalidated_camera |= scene.set_camera_keyframe_sample(
+				0, cpu_config.fps_measurement_frames);
+			break;
+		case ExperimentState::MEASURING_FPS:
+			invalidated_camera |= scene.set_camera_keyframe_sample(
+				measuringFrame, cpu_config.fps_measurement_frames);
+			break;
+		case ExperimentState::IDLE:
+		case ExperimentState::FINISHED:
+			break;
 	}
 		
 	scene.camera.update(delta);
@@ -714,4 +731,168 @@ void Integrator::update(float delta, Allocator * frame_allocator) {
 		sample_index++;
 	}
 
+}
+
+void Integrator::collapseBVH() {
+	//bv2 -> bvh8
+	size_t mesh_data_count = scene.asset_manager.mesh_datas.size();
+	for (size_t i = 0; i < mesh_data_count; i++) {
+		BVH2& oldBvh = *static_cast<BVH2*>(scene.asset_manager.mesh_datas[i].bvh.get());
+		const size_t base = mesh_data_bvh_offsets[i];
+		Array<uint64_t> local_counter(oldBvh.nodes.size());
+		if (counterCollapse) {
+			ASSERT(base + oldBvh.nodes.size() <= bvh_counter_results.size());
+			for (size_t n = 0; n < oldBvh.nodes.size(); n++) {
+				local_counter[n] = bvh_counter_results[base + n];
+			}
+		}
+		OwnPtr<BVH8> newBvh = make_owned<BVH8>();
+		BVH8Converter converter(*newBvh.get(), oldBvh);
+		//조건에 따라 converter 조건 결정
+		converter.counterCollapse = counterCollapse;
+		converter.counter = std::move(local_counter);
+		if (waldCollapse)
+			converter.convert_greedy();
+		else
+			converter.convert();
+
+		scene.asset_manager.mesh_datas[i].bvh = std::move(newBvh);
+	}
+
+	const BVH2& oldTlas = *static_cast<BVH2*>(tlas.get());
+	Array<uint64_t> local_counter(oldTlas.nodes.size());
+	if (counterCollapse) {
+		ASSERT(oldTlas.nodes.size() <= bvh_counter_results.size());
+		for (size_t n = 0; n < oldTlas.nodes.size(); n++) {
+			local_counter[n] = bvh_counter_results[n];
+		}
+	}
+	OwnPtr<BVH8> newTlas = make_owned<BVH8>();
+	
+	BVH8Converter converter(*newTlas.get(), oldTlas);
+	converter.counterCollapse = counterCollapse;
+	converter.counter = std::move(local_counter);
+	if (waldCollapse)
+		converter.convert_greedy();
+	else
+		converter.convert();
+	tlas = std::move(newTlas);
+	
+	//aggregated bvh8 upload
+	mesh_data_bvh_offsets.resize(mesh_data_count);
+	mesh_data_triangle_offsets.resize(mesh_data_count);
+
+	Array<int> mesh_data_index_offsets(mesh_data_count);
+
+	size_t aggregated_bvh_node_count = 2 * scene.meshes.size(); // Reserve 2 times Mesh count for TLAS
+	size_t aggregated_triangle_count = 0;
+	size_t aggregated_index_count = 0;
+
+	for (size_t i = 0; i < mesh_data_count; i++) {
+		mesh_data_bvh_offsets[i] = aggregated_bvh_node_count;
+		mesh_data_triangle_offsets[i] = aggregated_triangle_count;
+		mesh_data_index_offsets[i] = aggregated_index_count; //bvh starting positions
+
+		aggregated_bvh_node_count += scene.asset_manager.mesh_datas[i].bvh->node_count();
+		aggregated_triangle_count += scene.asset_manager.mesh_datas[i].triangles.size();
+		aggregated_index_count += scene.asset_manager.mesh_datas[i].bvh->indices.size();;
+	}
+
+	Array<CUDATriangle> aggregated_triangles(aggregated_index_count);
+	Array<int> aggregated_triangle_material_ids(aggregated_index_count);
+	reverse_indices.resize(aggregated_triangle_count);
+
+	for (int m = 0; m < mesh_data_count; m++) {
+		const MeshData& mesh_data = scene.asset_manager.mesh_datas[m];
+
+		for (size_t i = 0; i < mesh_data.bvh->indices.size(); i++) {
+			int index = mesh_data.bvh->indices[i];
+			const Triangle& triangle = mesh_data.triangles[index];
+			aggregated_triangle_material_ids[mesh_data_index_offsets[m] + i] =
+				mesh_data.material_ids.size() == mesh_data.triangles.size()
+				? mesh_data.material_ids[index]
+				: INVALID;
+
+			aggregated_triangles[mesh_data_index_offsets[m] + i].position_0 = triangle.position_0;
+			aggregated_triangles[mesh_data_index_offsets[m] + i].position_edge_1 = triangle.position_1 - triangle.position_0;
+			aggregated_triangles[mesh_data_index_offsets[m] + i].position_edge_2 = triangle.position_2 - triangle.position_0;
+
+			aggregated_triangles[mesh_data_index_offsets[m] + i].normal_0 = triangle.normal_0;
+			aggregated_triangles[mesh_data_index_offsets[m] + i].normal_edge_1 = triangle.normal_1 - triangle.normal_0;
+			aggregated_triangles[mesh_data_index_offsets[m] + i].normal_edge_2 = triangle.normal_2 - triangle.normal_0;
+
+			aggregated_triangles[mesh_data_index_offsets[m] + i].tex_coord_0 = triangle.tex_coord_0;
+			aggregated_triangles[mesh_data_index_offsets[m] + i].tex_coord_edge_1 = triangle.tex_coord_1 - triangle.tex_coord_0;
+			aggregated_triangles[mesh_data_index_offsets[m] + i].tex_coord_edge_2 = triangle.tex_coord_2 - triangle.tex_coord_0;
+
+			reverse_indices[mesh_data_triangle_offsets[m] + index] = mesh_data_index_offsets[m] + i;
+		}
+	}
+
+	// 기존 triangle GPU allocation 재사용
+	CUDAMemory::memcpy_async(ptr_triangles, aggregated_triangles.data(), aggregated_triangles.size(), memory_stream);
+	CUDAMemory::memcpy_async(ptr_triangle_material_ids, aggregated_triangle_material_ids.data(), aggregated_triangle_material_ids.size(), memory_stream);
+
+	Array<BVHNode8> aggregated_bvh_nodes(aggregated_bvh_node_count);
+
+	// BVH8 traversal always starts at global node 0.  The first
+	// 2 * mesh_count slots are reserved for the TLAS, so populate that region
+	// before appending the offset-adjusted BLAS nodes below.  TLAS node-local
+	// child/primitive bases intentionally remain unchanged: its leaf primitive
+	// indices address tlas->indices, not the aggregated BLAS-node array.
+	const BVH8 & rebuilt_tlas = static_cast<const BVH8 &>(*tlas.get());
+	ASSERT(rebuilt_tlas.nodes.size() <= 2 * scene.meshes.size());
+	for (size_t n = 0; n < rebuilt_tlas.nodes.size(); n++) {
+		aggregated_bvh_nodes[n] = rebuilt_tlas.nodes[n];
+	}
+
+	// Each individual BVH needs to put its Nodes in a shared aggregated array of BVH Nodes before being upload to the GPU
+	// The procedure to do this is different for each BVH type
+	for (int m = 0; m < mesh_data_count; m++) {
+		const MeshData& mesh_data = scene.asset_manager.mesh_datas[m];
+		const BVH8* bvh = static_cast<const BVH8*>(mesh_data.bvh.get());
+
+		int index_offset = mesh_data_index_offsets[m];
+		int bvh_offset = mesh_data_bvh_offsets[m];
+
+		BVHNode8* dst = aggregated_bvh_nodes.data() + bvh_offset;
+
+		for (size_t n = 0; n < bvh->nodes.size(); n++) {
+			BVHNode8& node = dst[n];
+			node = bvh->nodes[n];
+
+			node.base_index_triangle += index_offset;
+			node.base_index_child += bvh_offset;
+		}
+	}
+
+	for (int i = 0; i < scene.meshes.size(); i++) {
+		const Mesh& mesh = scene.meshes[tlas->indices[i]];
+
+		pinned_mesh_bvh_root_indices[i] = mesh_data_bvh_offsets[mesh.mesh_data_handle.handle] | (mesh.has_identity_transform() << 31);
+
+		ASSERT(mesh.material_handle.handle != INVALID);
+		pinned_mesh_material_ids[i] = mesh.material_handle.handle;
+
+		memcpy(pinned_mesh_transforms[i].cells, mesh.transform.cells, sizeof(Matrix3x4));
+		memcpy(pinned_mesh_transforms_inv[i].cells, mesh.transform_inv.cells, sizeof(Matrix3x4));
+		memcpy(pinned_mesh_transforms_prev[i].cells, mesh.transform_prev.cells, sizeof(Matrix3x4));
+	}
+
+	CUDAMemory::memcpy_async(ptr_mesh_bvh_root_indices, pinned_mesh_bvh_root_indices, scene.meshes.size(), memory_stream);
+	CUDAMemory::memcpy_async(ptr_mesh_material_ids, pinned_mesh_material_ids, scene.meshes.size(), memory_stream);
+	CUDAMemory::memcpy_async(ptr_mesh_transforms, pinned_mesh_transforms, scene.meshes.size(), memory_stream);
+	CUDAMemory::memcpy_async(ptr_mesh_transforms_inv, pinned_mesh_transforms_inv, scene.meshes.size(), memory_stream);
+	CUDAMemory::memcpy_async(ptr_mesh_transforms_prev, pinned_mesh_transforms_prev, scene.meshes.size(), memory_stream);
+	// material / transform / inverse / previous도 동일
+
+	CUDAMemory::free(ptr_bvh_nodes_2);
+	ptr_bvh_nodes_8 = CUDAMemory::malloc<BVHNode8>(aggregated_bvh_nodes);
+	cuda_module.get_global("bvh8_nodes").set_value(ptr_bvh_nodes_8);
+
+	tlas_converter = make_owned<BVH8Converter>(static_cast<BVH8&>(*tlas.get()), tlas_raw);
+
+
+	cpu_config.bvh_type = BVHType::BVH8;
+	//이후 trace 커널을 bvh8로 수정(이건 pathtracerer에서 필요)
 }

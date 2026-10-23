@@ -1,12 +1,74 @@
 #include "Pathtracer.h"
 
 #include <cmath>
+#include <cstdio>
+#include <filesystem>
 
 #include <Imgui/imgui.h>
 
 #include "Core/Allocators/LinearAllocator.h"
+#include "Core/IO.h"
 
 #include "CUDA/Common.h"
+
+void Pathtracer::write_experiment_fps_csv() const {
+	const char * source_bvh = "unknown";
+	switch (source_bvh_type) {
+		case BVHType::BVH:  source_bvh = "sah";  break;
+		case BVHType::SBVH: source_bvh = "sbvh"; break;
+		case BVHType::BVH4: source_bvh = "bvh4"; break;
+		case BVHType::BVH8: source_bvh = "bvh8"; break;
+	}
+
+	const char * scene_name = "scene";
+	std::string scene_stem;
+	if (cpu_config.scene_filenames.size() > 0) {
+		scene_stem = std::filesystem::path(cpu_config.scene_filenames[0].data()).stem().string();
+		if (!scene_stem.empty()) scene_name = scene_stem.c_str();
+	}
+
+	const std::filesystem::path directory = "statistics/fps";
+	std::error_code error;
+	std::filesystem::create_directories(directory, error);
+	if (error) {
+		std::fprintf(stderr, "WARNING: Could not create FPS statistics directory: %s\n", error.message().c_str());
+		return;
+	}
+
+	// Keep this schema separate from the earlier one-off FPS export, which did
+	// not contain source_bvh and therefore cannot safely receive these rows.
+	const std::filesystem::path filename = directory / (std::string(scene_name) + "_bvh2_to_bvh8_sweep.csv");
+	const bool write_header = !std::filesystem::exists(filename) || std::filesystem::file_size(filename, error) == 0;
+
+	FILE * file = nullptr;
+#ifdef _WIN32
+	fopen_s(&file, filename.string().c_str(), "ab");
+#else
+	file = fopen(filename.string().c_str(), "ab");
+#endif
+	if (!file) {
+		std::fprintf(stderr, "WARNING: Could not write FPS statistics file: %s\n", filename.string().c_str());
+		return;
+	}
+
+	if (write_header) {
+		std::fprintf(file,
+			"scene,source_bvh,counter_collapse,wald_collapse,counter_frames,warmup_frames,fps_frames,total_time_ms,fps\n");
+	}
+	std::fprintf(file, "%s,%s,%d,%d,%llu,%llu,%llu,%.6f,%.6f\n",
+		scene_name,
+		source_bvh,
+		counterCollapse ? 1 : 0,
+		waldCollapse ? 1 : 0,
+		static_cast<unsigned long long>(cpu_config.counter_collection_frames),
+		static_cast<unsigned long long>(cpu_config.fps_warmup_frames),
+		static_cast<unsigned long long>(cpu_config.fps_measurement_frames),
+		total_frame_time_ms,
+		static_cast<double>(experiment_fps));
+	std::fclose(file);
+
+	IO::print("Wrote experiment FPS CSV: {}\n"_sv, filename.string().c_str());
+}
 
 void Pathtracer::cuda_init(unsigned frame_buffer_handle, int screen_width, int screen_height) {
 	init_module();
@@ -787,10 +849,33 @@ static const char* get_node_type(
 	return "RESERVED";
 }
 
+void Pathtracer::begin_bvh8_measurement() {
+	counter_mode = false;
+
+	collapseBVH();
+	kernel_trace = &kernel_trace_bvh8;
+	kernel_trace_shadow = &kernel_trace_shadow_bvh8;
+	invalidated_light_sampling = true;
+
+	CUDAMemory::memset_async(ptr_counter_mode, counter_mode, 1, memory_stream);
+	measuringFrame = 0;
+	total_frame_time_ms = 0.0;
+	experiment_state = cpu_config.enable_experiment_fps_measurement
+		? (cpu_config.fps_warmup_frames > 0 ? ExperimentState::WARMING_UP_FPS : ExperimentState::MEASURING_FPS)
+		: ExperimentState::FINISHED;
+	if (experiment_state == ExperimentState::FINISHED) {
+		experiment_finished = true;
+	}
+}
+
 void Pathtracer::render() {
 	event_pool.reset();
 
 	CUDACALL(cuStreamSynchronize(memory_stream));
+	if (experiment_state == ExperimentState::PREPARING_BVH8) {
+		begin_bvh8_measurement();
+		return; // The asynchronous BVH8 upload becomes visible next frame.
+	}
 
 	int pixels_left = pixel_count;
 	int batch_size  = Math::min(BATCH_SIZE, pixel_count);
@@ -847,112 +932,24 @@ void Pathtracer::render() {
 		}
 	}
 
-	//jichan add
-	if (counter_mode) {
-		static uint64_t counter_limit = 200ull;
-		if (bvh_counter_dumped + 1 == counter_limit) {
+	if (experiment_state == ExperimentState::COLLECTING_COUNTERS) {
+		if (bvh_counter_dumped + 1 >= cpu_config.counter_collection_frames) {
 			CUDACALL(cuStreamSynchronize(nullptr));
 
-			Array<uint64_t> host_counters(bvh_counter_count);
-			CUDAMemory::memcpy<uint64_t>(host_counters.data(), ptr_bvh_counter, bvh_counter_count);
+			bvh_counter_results.resize(bvh_counter_count);
+			triangle_counter_results.resize(triangle_counter_count);
+			mesh_counter_results.resize(mesh_counter_count);
+			CUDAMemory::memcpy<uint64_t>(bvh_counter_results.data(), ptr_bvh_counter, bvh_counter_count);
+			CUDAMemory::memcpy<uint64_t>(triangle_counter_results.data(), ptr_triangle_counter, triangle_counter_count);
+			CUDAMemory::memcpy<uint64_t>(mesh_counter_results.data(), ptr_mesh_counter, mesh_counter_count);
 
-			Array<BVHNode8> host_nodes(bvh_counter_count);
-			CUDAMemory::memcpy<BVHNode8>(host_nodes.data(), ptr_bvh_nodes_8, bvh_counter_count);
-
-			Array<uint64_t> host_triangle_counters(triangle_counter_count);
-			CUDAMemory::memcpy<uint64_t>(host_triangle_counters.data(), ptr_triangle_counter, triangle_counter_count);
-
-			Array<uint64_t> host_mesh_counters(mesh_counter_count);
-			CUDAMemory::memcpy<uint64_t>(host_mesh_counters.data(), ptr_mesh_counter, mesh_counter_count);
-
-			FILE* file = nullptr;
-			fopen_s(&file, "bvh8.csv", "wb");
-			if (file) {
-				fprintf(file, "node_index,node_type,node_count");
-				for (int child_slot = 0; child_slot < 8; child_slot++) {
-					fprintf(file,
-						",child_index_%d,child_count_%d,"
-						"child_min_x_%d,child_min_y_%d,child_min_z_%d,"
-						"child_max_x_%d,child_max_y_%d,child_max_z_%d",
-						child_slot, child_slot,
-						child_slot, child_slot, child_slot,
-						child_slot, child_slot, child_slot);
-				}
-				fprintf(file, "\n");
-
-				for (size_t i = 0; i < bvh_counter_count; i++) {
-					const BVHNode8& node = host_nodes[i];
-
-					const char* node_type = get_node_type(i, tlas->node_count(), mesh_data_bvh_offsets, scene);
-
-					if (strcmp(node_type, "RESERVED") == 0) {
-						continue;
-					}
-
-					int child_indices[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
-					uint64_t child_counts[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
-					float child_bounds[8][6];
-					for (int child_slot = 0; child_slot < 8; child_slot++) {
-						for (int component = 0; component < 6; component++) child_bounds[child_slot][component] = NAN;
-					}
-
-					for (int child_slot = 0; child_slot < 8; child_slot++) {
-						const unsigned meta = unsigned(node.meta[child_slot]);
-
-						if (meta == 0) {
-							continue;
-						}
-						get_child_aabb(node, child_slot, child_bounds[child_slot]);
-
-						const bool is_internal = (unsigned(node.imask) & (1u << child_slot)) != 0;
-
-						if (is_internal) {
-							const int child_node_index = get_child_node_index(node, child_slot);
-							child_indices[child_slot] = child_node_index;
-							child_counts[child_slot] = host_counters[child_node_index];
-						}
-						else {
-							// meta 하위 5 bit는 이 node primitive group 내 시작 offset,
-							// 상위 3 bit의 unary mask는 이 child가 보유한 primitive 개수다.
-							const int first_primitive = int(node.base_index_triangle) + int(meta & 0x1f);
-							const unsigned primitive_mask = meta >> 5;
-							int primitive_count = 0;
-							for (unsigned bits = primitive_mask; bits != 0; bits &= bits - 1) {
-								primitive_count++;
-							}
-
-							// A leaf child has no physical BVH8 node. Record its first primitive
-							// as a negative index; for a BLAS leaf, sum all triangle test counters.
-							child_indices[child_slot] = -(first_primitive + 1);
-							if (strcmp(node_type, "BLAS") == 0) {
-								for (int primitive_offset = 0; primitive_offset < primitive_count; primitive_offset++) {
-									child_counts[child_slot] += host_triangle_counters[first_primitive + primitive_offset];
-								}
-							}
-							else {
-								for (int primitive_offset = 0; primitive_offset < primitive_count; primitive_offset++) {
-									child_counts[child_slot] += host_mesh_counters[first_primitive + primitive_offset];
-								}
-							}
-						}
-					}
-
-					fprintf(file, "%zu,%s,%llu", i, node_type, static_cast<unsigned long long>(host_counters[i]));
-					for (int child_slot = 0; child_slot < 8; child_slot++) {
-						const float* bounds = child_bounds[child_slot];
-						fprintf(file, ",%d,%llu,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g",
-							child_indices[child_slot], static_cast<unsigned long long>(child_counts[child_slot]),
-							bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]);
-					}
-					fprintf(file, "\n");
-				}
-				fclose(file);
-				std::printf("Successfully wrote BVH meatadata to BVH8.csv");
-			}
-			counter_mode = false;
-			CUDAMemory::memset_async(ptr_counter_mode, counter_mode, 1, memory_stream);
+			begin_bvh8_measurement();
+			// Do not count the final BVH2 counter frame as a BVH8 warm-up frame.
+			pinned_buffer_sizes->reset(batch_size);
+			global_buffer_sizes.set_value(*pinned_buffer_sizes);
+			return;
 		}
-		else if (bvh_counter_dumped < counter_limit) {
+		else {
 			bvh_counter_dumped++;
 		}
 	}
@@ -1004,6 +1001,31 @@ void Pathtracer::render() {
 	}
 
 	event_pool.record(&event_desc_end);
+
+	if (experiment_state == ExperimentState::WARMING_UP_FPS) {
+		if (++measuringFrame >= cpu_config.fps_warmup_frames) {
+			measuringFrame = 0;
+			total_frame_time_ms = 0.0;
+			experiment_state = ExperimentState::MEASURING_FPS;
+		}
+	}
+	else if (experiment_state == ExperimentState::MEASURING_FPS) {
+		ASSERT(event_pool.num_used >= 2);
+		CUDACALL(cuEventSynchronize(event_pool.pool[event_pool.num_used - 1].event));
+		total_frame_time_ms += CUDAEvent::time_elapsed_between(
+			event_pool.pool[0], event_pool.pool[event_pool.num_used - 1]);
+
+		if (++measuringFrame >= cpu_config.fps_measurement_frames) {
+			experiment_fps = total_frame_time_ms > 0.0
+				? float(1000.0 * double(cpu_config.fps_measurement_frames) / total_frame_time_ms)
+				: 0.0f;
+			IO::print("Experiment FPS: {} ({} frames, {} ms)\\n"_sv,
+				experiment_fps, cpu_config.fps_measurement_frames, total_frame_time_ms);
+			write_experiment_fps_csv();
+			experiment_state = ExperimentState::FINISHED;
+			experiment_finished = true;
+		}
+	}
 
 	// Reset buffer sizes to default for next frame
 	pinned_buffer_sizes->reset(batch_size);

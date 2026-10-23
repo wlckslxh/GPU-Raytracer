@@ -14,6 +14,9 @@ void BVH8Converter::convert() {
 	decisions.resize(bvh2.nodes.size() * 7);
 
 	// Fill cost table using dynamic programming (bottom up)
+	if (counterCollapse) {
+		rootCounterSA = bvh2.nodes[0].aabb.surface_area() / (float)counter[0];
+	}
 	calculate_cost(0, bvh2.nodes);
 
 	// Collapse SBVH into 8-way tree (top down)
@@ -38,7 +41,7 @@ void BVH8Converter::convert_greedy() {
 	bvh8.nodes.clear();
 	bvh8.nodes.emplace_back(); // Root
 
-	collapse(bvh2.nodes, bvh2.indices, 0, 0, true);
+	collapse_greedy(bvh2.nodes, bvh2.indices, 0, 0);
 	ASSERT(bvh8.indices.size() == bvh2.indices.size());
 }
 
@@ -55,7 +58,13 @@ int BVH8Converter::calculate_cost(int node_index, const Array<BVHNode2> & nodes)
 		}
 
 		// SAH cost
-		float cost_leaf = node.aabb.surface_area() * float(num_primitives);
+		float cost_leaf;
+		if (counterCollapse) {
+			cost_leaf = node.aabb.surface_area() + counter[node_index] * rootCounterSA;
+		}
+		else {
+			cost_leaf = node.aabb.surface_area() * float(num_primitives);
+		}
 
 		for (int i = 0; i < 7; i++) {
 			decisions[node_index * 7 + i].type = Decision::Type::LEAF;
@@ -68,7 +77,13 @@ int BVH8Converter::calculate_cost(int node_index, const Array<BVHNode2> & nodes)
 
 		// Separate case: i=0 (i=1 in the paper)
 		{
-			float cost_leaf = num_primitives <= 3 ? float(num_primitives) * node.aabb.surface_area() : INFINITY;
+			float cost_leaf;
+			if (counterCollapse) {
+				cost_leaf = num_primitives <= 3 ? node.aabb.surface_area() + counter[node_index] * rootCounterSA : INFINITY;
+			}
+			else {
+				cost_leaf = num_primitives <= 3 ? float(num_primitives) * node.aabb.surface_area() : INFINITY;
+			}
 
 			float cost_distribute = INFINITY;
 
@@ -89,6 +104,9 @@ int BVH8Converter::calculate_cost(int node_index, const Array<BVHNode2> & nodes)
 			}
 
 			float cost_internal = cost_distribute + node.aabb.surface_area();
+			if (counterCollapse) {
+				cost_internal += counter[node_index] * rootCounterSA;
+			}
 
 			if (cost_leaf < cost_internal) {
 				decisions[node_index * 7].type = Decision::Type::LEAF;
@@ -170,18 +188,36 @@ void BVH8Converter::get_children_greedy(int node_index, const Array<BVHNode2> & 
 	children[0] = node_index;
 	child_count = 1;
 
-	// Expand the largest available internal subtree until the wide node is full
-	// or all remaining candidates are binary leaves. Ties keep the first slot.
 	while (child_count < 8) {
 		int largest_index = INVALID;
 		float largest_area = -1.0f;
 		for (int i = 0; i < child_count; i++) {
 			const BVHNode2 & child = nodes[children[i]];
 			if (child.is_leaf()) continue;
-			const float area = child.aabb.surface_area();
-			if (largest_index == INVALID || area > largest_area) {
-				largest_area = area;
-				largest_index = i;
+			if (counterCollapse) {
+				const float parent_area = nodes[node_index].aabb.surface_area();
+				const float surface_share = parent_area > 0.0f
+					? child.aabb.surface_area() / parent_area
+					: 0.0f;
+				// Counter values are uint64_t. Cast before division: integer division
+				// loses the intended sibling ratio, and an unvisited subtree makes
+				// the original 0 / 0 expression terminate the CPU process.
+				const uint64_t parent_counter = counter[node_index];
+				const float traversal_share = parent_counter > 0
+					? static_cast<float>(counter[children[i]]) / static_cast<float>(parent_counter)
+					: 0.0f;
+				const float heuristic = surface_share + traversal_share;
+				if (largest_index == INVALID || heuristic > largest_area) {
+					largest_area = heuristic;
+					largest_index = i;
+				}
+			}
+			else{
+				const float area = child.aabb.surface_area();
+				if (largest_index == INVALID || area > largest_area) {
+					largest_area = area;
+					largest_index = i;
+				}
 			}
 		}
 		if (largest_index == INVALID) break;
@@ -274,7 +310,7 @@ int BVH8Converter::count_primitives(int node_index, const Array<BVHNode2> & node
 		count_primitives(node.left + 1, nodes, indices);
 }
 
-void BVH8Converter::collapse(const Array<BVHNode2> & nodes_bvh, const Array<int> & indices_bvh, int node_index_bvh8, int node_index_bvh2, bool greedy) {
+void BVH8Converter::collapse(const Array<BVHNode2> & nodes_bvh, const Array<int> & indices_bvh, int node_index_bvh8, int node_index_bvh2) {
 	BVHNode8 & node = bvh8.nodes[node_index_bvh8];
 	const AABB & aabb = nodes_bvh[node_index_bvh2].aabb;
 
@@ -307,11 +343,7 @@ void BVH8Converter::collapse(const Array<BVHNode2> & nodes_bvh, const Array<int>
 
 	int child_count = 0;
 	int children[8] = { INVALID, INVALID, INVALID, INVALID, INVALID, INVALID, INVALID, INVALID };
-	if (greedy) {
-		get_children_greedy(node_index_bvh2, nodes_bvh, children, child_count);
-	} else {
-		get_children(node_index_bvh2, nodes_bvh, children, child_count, 0);
-	}
+	get_children(node_index_bvh2, nodes_bvh, children, child_count, 0);
 	ASSERT(child_count <= 8);
 
 	order_children(node_index_bvh2, nodes_bvh, children, child_count);
@@ -338,10 +370,7 @@ void BVH8Converter::collapse(const Array<BVHNode2> & nodes_bvh, const Array<int>
 		node.quantized_max_y[i] = byte(ceilf((child_aabb.max.y - node.p.y) * one_over_e.y));
 		node.quantized_max_z[i] = byte(ceilf((child_aabb.max.z - node.p.z) * one_over_e.z));
 
-		const Decision::Type child_type = greedy
-			? (nodes_bvh[child_index].is_leaf() ? Decision::Type::LEAF : Decision::Type::INTERNAL)
-			: decisions[child_index * 7].type;
-		switch (child_type) {
+		switch (decisions[child_index * 7].type) {
 			case Decision::Type::LEAF: {
 				int triangle_count = count_primitives(child_index, nodes_bvh, indices_bvh);
 				ASSERT(triangle_count > 0 && triangle_count <= 3);
@@ -383,7 +412,85 @@ void BVH8Converter::collapse(const Array<BVHNode2> & nodes_bvh, const Array<int>
 		if (child_index == INVALID) continue;
 
 		if (node.imask & (1 << i)) {
-			collapse(nodes_bvh, indices_bvh, node.base_index_child + offset++, child_index, greedy);
+			collapse(nodes_bvh, indices_bvh, node.base_index_child + offset++, child_index);
+		}
+	}
+}
+
+void BVH8Converter::collapse_greedy(const Array<BVHNode2> & nodes_bvh, const Array<int> & indices_bvh, int node_index_bvh8, int node_index_bvh2) {
+	BVHNode8 & node = bvh8.nodes[node_index_bvh8];
+	const AABB & aabb = nodes_bvh[node_index_bvh2].aabb;
+
+	node.p = aabb.min;
+
+	constexpr int Nq = 8;
+	constexpr float denom = 1.0f / float((1 << Nq) - 1);
+	Vector3 e(
+		exp2f(ceilf(log2f((aabb.max.x - aabb.min.x) * denom))),
+		exp2f(ceilf(log2f((aabb.max.y - aabb.min.y) * denom))),
+		exp2f(ceilf(log2f((aabb.max.z - aabb.min.z) * denom)))
+	);
+	Vector3 one_over_e(1.0f / e.x, 1.0f / e.y, 1.0f / e.z);
+
+	unsigned u_ex = Util::bit_cast<unsigned>(e.x);
+	unsigned u_ey = Util::bit_cast<unsigned>(e.y);
+	unsigned u_ez = Util::bit_cast<unsigned>(e.z);
+	ASSERT((u_ex & 0b10000000011111111111111111111111) == 0);
+	ASSERT((u_ey & 0b10000000011111111111111111111111) == 0);
+	ASSERT((u_ez & 0b10000000011111111111111111111111) == 0);
+	node.e[0] = u_ex >> 23;
+	node.e[1] = u_ey >> 23;
+	node.e[2] = u_ez >> 23;
+
+	int child_count = 0;
+	int children[8] = { INVALID, INVALID, INVALID, INVALID, INVALID, INVALID, INVALID, INVALID };
+	get_children_greedy(node_index_bvh2, nodes_bvh, children, child_count);
+	ASSERT(child_count <= 8);
+	order_children(node_index_bvh2, nodes_bvh, children, child_count);
+
+	node.imask = 0;
+	node.base_index_triangle = unsigned(bvh8.indices.size());
+	node.base_index_child    = unsigned(bvh8.nodes.size());
+
+	int num_internal_nodes = 0;
+	int num_triangles = 0;
+	for (int i = 0; i < 8; i++) {
+		const int child_index = children[i];
+		if (child_index == INVALID) continue;
+
+		const AABB & child_aabb = nodes_bvh[child_index].aabb;
+		node.quantized_min_x[i] = byte(floorf((child_aabb.min.x - node.p.x) * one_over_e.x));
+		node.quantized_min_y[i] = byte(floorf((child_aabb.min.y - node.p.y) * one_over_e.y));
+		node.quantized_min_z[i] = byte(floorf((child_aabb.min.z - node.p.z) * one_over_e.z));
+		node.quantized_max_x[i] = byte(ceilf((child_aabb.max.x - node.p.x) * one_over_e.x));
+		node.quantized_max_y[i] = byte(ceilf((child_aabb.max.y - node.p.y) * one_over_e.y));
+		node.quantized_max_z[i] = byte(ceilf((child_aabb.max.z - node.p.z) * one_over_e.z));
+
+		if (nodes_bvh[child_index].is_leaf()) {
+			const int triangle_count = count_primitives(child_index, nodes_bvh, indices_bvh);
+			ASSERT(triangle_count == 1);
+			node.meta[i] |= 0b00100000;
+			node.meta[i] |= num_triangles++;
+		} else {
+			node.meta[i] = (i + 24) | 0b00100000;
+			node.imask |= (1 << i);
+			num_internal_nodes++;
+		}
+	}
+
+	for (int i = 0; i < num_internal_nodes; i++) {
+		bvh8.nodes.emplace_back();
+	}
+	node = bvh8.nodes[node_index_bvh8];
+	ASSERT(node.base_index_child + num_internal_nodes == bvh8.nodes.size());
+	ASSERT(node.base_index_triangle + num_triangles == bvh8.indices.size());
+
+	int offset = 0;
+	for (int i = 0; i < 8; i++) {
+		const int child_index = children[i];
+		if (child_index == INVALID) continue;
+		if (node.imask & (1 << i)) {
+			collapse_greedy(nodes_bvh, indices_bvh, node.base_index_child + offset++, child_index);
 		}
 	}
 }

@@ -169,6 +169,9 @@ struct Integrator {
 	size_t mesh_counter_count = 0;
 	uint64_t bvh_counter_dumped = 0;
 	CUDAMemory::Ptr<bool> ptr_counter_mode;
+	Array<uint64_t> bvh_counter_results;
+	Array<uint64_t> triangle_counter_results;
+	Array<uint64_t> mesh_counter_results;
 
 	CUDAMemory::Ptr<int>       ptr_mesh_bvh_root_indices;
 	CUDAMemory::Ptr<int>       ptr_mesh_material_ids;
@@ -211,10 +214,40 @@ struct Integrator {
 	AOV aovs[size_t(AOVType::COUNT)];
 	CUDAModule::Global global_aovs;
 
-	//jichan add
+	enum class ExperimentState : uint8_t {
+		IDLE,
+		PREPARING_BVH8,
+		COLLECTING_COUNTERS,
+		WARMING_UP_FPS,
+		MEASURING_FPS,
+		FINISHED
+	};
+	ExperimentState experiment_state = ExperimentState::IDLE;
+	uint64_t measuringFrame = 0;
+	double total_frame_time_ms = 0.0;
+	float experiment_fps = 0.0f;
+	bool experiment_finished = false;
 	bool counter_mode = false;
+	bool counterCollapse = true;
+	bool waldCollapse = false;
+	BVHType source_bvh_type = BVHType::BVH;
 
 	Integrator(Scene & scene) : scene(scene) {
+		source_bvh_type = cpu_config.bvh_type;
+		counterCollapse = cpu_config.enable_counter_collapse;
+		waldCollapse = cpu_config.enable_wald_collapse;
+		if (cpu_config.enable_bvh2_to_bvh8_experiment) {
+			// A geometric collapse does not consume traversal counters. Do not run
+			// the BVH2 collection pass or allocate its counter buffers in that case.
+			counter_mode = cpu_config.enable_bvh_counter_collection && counterCollapse;
+			if (counter_mode) {
+				experiment_state = ExperimentState::COLLECTING_COUNTERS;
+			} else {
+				// Geometry uploads exist only after cuda_init, so conversion is
+				// deferred to the first Pathtracer::render call.
+				experiment_state = ExperimentState::PREPARING_BVH8;
+			}
+		}
 		CUDACALL(cuStreamCreate(&memory_stream, CU_STREAM_NON_BLOCKING));
 	}
 
@@ -311,4 +344,7 @@ struct Integrator {
 		kernel.set_grid_dim(1, grid, 1);
 		kernel.set_shared_memory(block_size_to_shared_memory(block));
 	};
+
+	//jichan add
+	void collapseBVH();
 };
