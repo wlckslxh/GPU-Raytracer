@@ -249,8 +249,13 @@ int SBVHBuilder::build_sbvh(int node_index, const Array<Triangle> & triangles, i
 
 				ASSERT(intersection_count < Util::array_count(intersections));
 
-				// All intersection points should be included both AABBs
-				AABB aabb_intersections = AABB::from_points(intersections, intersection_count);
+				// A primitive can be classified as a straddler from its conservatively
+				// expanded AABB while its actual edges do not cross the split plane.
+				// Do not construct an AABB from an empty point set in that case; keep
+				// the conservative original bounds for both duplicated references.
+				AABB aabb_intersections = intersection_count > 0
+					? AABB::from_points(intersections, intersection_count)
+					: triangle_aabb;
 				AABB aabb_left 	= aabb_intersections;
 				AABB aabb_right = aabb_intersections;
 
