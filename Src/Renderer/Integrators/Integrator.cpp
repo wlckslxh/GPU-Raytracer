@@ -740,7 +740,7 @@ void Integrator::collapseBVH() {
 		BVH2& oldBvh = *static_cast<BVH2*>(scene.asset_manager.mesh_datas[i].bvh.get());
 		const size_t base = mesh_data_bvh_offsets[i];
 		Array<uint64_t> local_counter(oldBvh.nodes.size());
-		if (counterCollapse) {
+		if (counterCollapse || guRDTC) {
 			ASSERT(base + oldBvh.nodes.size() <= bvh_counter_results.size());
 			for (size_t n = 0; n < oldBvh.nodes.size(); n++) {
 				local_counter[n] = bvh_counter_results[base + n];
@@ -750,8 +750,12 @@ void Integrator::collapseBVH() {
 		BVH8Converter converter(*newBvh.get(), oldBvh);
 		//조건에 따라 converter 조건 결정
 		converter.counterCollapse = counterCollapse;
+		converter.guRDTC = guRDTC;
+		converter.guRDTCThreshold = guRDTCThreshold;
 		converter.counter = std::move(local_counter);
-		if (waldCollapse)
+		if (guRDTC)
+			converter.convert_gu_rdtc();
+		else if (waldCollapse)
 			converter.convert_greedy();
 		else
 			converter.convert();
@@ -761,7 +765,7 @@ void Integrator::collapseBVH() {
 
 	const BVH2& oldTlas = *static_cast<BVH2*>(tlas.get());
 	Array<uint64_t> local_counter(oldTlas.nodes.size());
-	if (counterCollapse) {
+	if (counterCollapse || guRDTC) {
 		ASSERT(oldTlas.nodes.size() <= bvh_counter_results.size());
 		for (size_t n = 0; n < oldTlas.nodes.size(); n++) {
 			local_counter[n] = bvh_counter_results[n];
@@ -771,8 +775,12 @@ void Integrator::collapseBVH() {
 	
 	BVH8Converter converter(*newTlas.get(), oldTlas);
 	converter.counterCollapse = counterCollapse;
+	converter.guRDTC = guRDTC;
+	converter.guRDTCThreshold = guRDTCThreshold;
 	converter.counter = std::move(local_counter);
-	if (waldCollapse)
+	if (guRDTC)
+		converter.convert_gu_rdtc();
+	else if (waldCollapse)
 		converter.convert_greedy();
 	else
 		converter.convert();

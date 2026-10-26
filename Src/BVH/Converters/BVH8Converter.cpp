@@ -45,6 +45,12 @@ void BVH8Converter::convert_greedy() {
 	ASSERT(bvh8.indices.size() == bvh2.indices.size());
 }
 
+void BVH8Converter::convert_gu_rdtc() {
+	ASSERT(guRDTC);
+	ASSERT(counter.size() == bvh2.nodes.size());
+	convert_greedy();
+}
+
 int BVH8Converter::calculate_cost(int node_index, const Array<BVHNode2> & nodes) {
 	const BVHNode2 & node = nodes[node_index];
 
@@ -194,7 +200,23 @@ void BVH8Converter::get_children_greedy(int node_index, const Array<BVHNode2> & 
 		for (int i = 0; i < child_count; i++) {
 			const BVHNode2 & child = nodes[children[i]];
 			if (child.is_leaf()) continue;
-			if (counterCollapse) {
+			if (guRDTC) {
+				// CBTC-RD (Gu et al.): use the measured Pass-test probability only
+				// after it has at least t observations. Sparse samples fall back to
+				// the same normalized surface-area estimate as CBTC-SA/Wald.
+				const uint64_t child_counter = counter[children[i]];
+				const uint64_t parent_counter = counter[node_index];
+				const float parent_area = nodes[node_index].aabb.surface_area();
+				const float heuristic = child_counter >= guRDTCThreshold && parent_counter > 0
+					? static_cast<float>(child_counter) / static_cast<float>(parent_counter)
+					: (parent_area > 0.0f ? child.aabb.surface_area() / parent_area : 0.0f);
+
+				if (largest_index == INVALID || heuristic > largest_area) {
+					largest_area = heuristic;
+					largest_index = i;
+				}
+			}
+			else if (counterCollapse) {
 				const float parent_area = nodes[node_index].aabb.surface_area();
 				const float surface_share = parent_area > 0.0f
 					? child.aabb.surface_area() / parent_area

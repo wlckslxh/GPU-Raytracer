@@ -67,6 +67,16 @@ struct CPUConfig {
 	// process without editing source files.
 	bool     enable_counter_collapse = true;
 	bool     enable_wald_collapse = false;
+	// Gu et al. CBTC-RD: use visit-count ratio for sufficiently sampled
+	// children, otherwise fall back to the surface-area ratio. This is kept
+	// separate from the project's existing counter-aware heuristic.
+	bool     enable_gu_rdtc = false;
+	uint64_t gu_rdtc_threshold = 32ull;
+	// The collection pass and the timed render may intentionally use different
+	// path lengths.  This permits, for example, a primary-ray distribution to
+	// guide a full path-tracing measurement.
+	int      counter_collection_bounces = 1;
+	int      measurement_bounces = 10;
 	uint64_t counter_collection_frames = 200ull;
 	uint64_t fps_warmup_frames = 10ull;
 	uint64_t fps_measurement_frames = 200ull;

@@ -9,6 +9,10 @@ struct BVH8Converter final : BVHConverter {
 	//jichan add
 	Array<uint64_t> counter;
 	bool counterCollapse = false;
+	// Gu et al. CBTC-RD selection: counter ratio after threshold t, SA ratio
+	// before threshold t. This remains distinct from counterCollapse.
+	bool guRDTC = false;
+	uint64_t guRDTCThreshold = 32ull;
 	float rootCounterSA;
 	//jichan add end
 
@@ -21,6 +25,7 @@ struct BVH8Converter final : BVHConverter {
 	// Greedy surface-area collapse; preserves the original binary leaves.
 	// Call explicitly instead of convert() to select this alternative.
 	void convert_greedy();
+	void convert_gu_rdtc();
 
 private:
 	struct Decision {

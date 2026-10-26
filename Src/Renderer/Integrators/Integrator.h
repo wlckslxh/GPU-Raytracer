@@ -230,19 +230,25 @@ struct Integrator {
 	bool counter_mode = false;
 	bool counterCollapse = true;
 	bool waldCollapse = false;
+	bool guRDTC = false;
+	uint64_t guRDTCThreshold = 32ull;
 	BVHType source_bvh_type = BVHType::BVH;
 
 	Integrator(Scene & scene) : scene(scene) {
 		source_bvh_type = cpu_config.bvh_type;
 		counterCollapse = cpu_config.enable_counter_collapse;
 		waldCollapse = cpu_config.enable_wald_collapse;
+		guRDTC = cpu_config.enable_gu_rdtc;
+		guRDTCThreshold = cpu_config.gu_rdtc_threshold;
 		if (cpu_config.enable_bvh2_to_bvh8_experiment) {
 			// A geometric collapse does not consume traversal counters. Do not run
 			// the BVH2 collection pass or allocate its counter buffers in that case.
-			counter_mode = cpu_config.enable_bvh_counter_collection && counterCollapse;
+			counter_mode = cpu_config.enable_bvh_counter_collection && (counterCollapse || guRDTC);
 			if (counter_mode) {
+				gpu_config.num_bounces = cpu_config.counter_collection_bounces;
 				experiment_state = ExperimentState::COLLECTING_COUNTERS;
 			} else {
+				gpu_config.num_bounces = cpu_config.measurement_bounces;
 				// Geometry uploads exist only after cuda_init, so conversion is
 				// deferred to the first Pathtracer::render call.
 				experiment_state = ExperimentState::PREPARING_BVH8;

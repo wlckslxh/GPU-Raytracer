@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <string>
 
 #include <Imgui/imgui.h>
 
@@ -37,7 +38,15 @@ void Pathtracer::write_experiment_fps_csv() const {
 
 	// Keep this schema separate from the earlier one-off FPS export, which did
 	// not contain source_bvh and therefore cannot safely receive these rows.
-	const std::filesystem::path filename = directory / (std::string(scene_name) + "_bvh2_to_bvh8_sweep.csv");
+	std::string filename_stem = std::string(scene_name) + "_bvh2_to_bvh8_";
+	if (guRDTC) {
+		filename_stem += "gu_rdtc_t" + std::to_string(guRDTCThreshold) + "_";
+	} else {
+		filename_stem += "sweep_";
+	}
+	filename_stem += "b" + std::to_string(cpu_config.counter_collection_bounces) +
+		"_r" + std::to_string(cpu_config.measurement_bounces) + ".csv";
+	const std::filesystem::path filename = directory / filename_stem;
 	const bool write_header = !std::filesystem::exists(filename) || std::filesystem::file_size(filename, error) == 0;
 
 	FILE * file = nullptr;
@@ -51,20 +60,40 @@ void Pathtracer::write_experiment_fps_csv() const {
 		return;
 	}
 
-	if (write_header) {
-		std::fprintf(file,
-			"scene,source_bvh,counter_collapse,wald_collapse,counter_frames,warmup_frames,fps_frames,total_time_ms,fps\n");
+	if (guRDTC) {
+		if (write_header) {
+			std::fprintf(file,
+				"scene,source_bvh,gu_rdtc,gu_threshold,counter_bounces,measurement_bounces,counter_frames,warmup_frames,fps_frames,total_time_ms,fps\n");
+		}
+		std::fprintf(file, "%s,%s,1,%llu,%d,%d,%llu,%llu,%llu,%.6f,%.6f\n",
+			scene_name,
+			source_bvh,
+			static_cast<unsigned long long>(guRDTCThreshold),
+			cpu_config.counter_collection_bounces,
+			cpu_config.measurement_bounces,
+			static_cast<unsigned long long>(cpu_config.counter_collection_frames),
+			static_cast<unsigned long long>(cpu_config.fps_warmup_frames),
+			static_cast<unsigned long long>(cpu_config.fps_measurement_frames),
+			total_frame_time_ms,
+			static_cast<double>(experiment_fps));
+	} else {
+		if (write_header) {
+			std::fprintf(file,
+				"scene,source_bvh,counter_collapse,wald_collapse,counter_bounces,measurement_bounces,counter_frames,warmup_frames,fps_frames,total_time_ms,fps\n");
+		}
+		std::fprintf(file, "%s,%s,%d,%d,%d,%d,%llu,%llu,%llu,%.6f,%.6f\n",
+			scene_name,
+			source_bvh,
+			counterCollapse ? 1 : 0,
+			waldCollapse ? 1 : 0,
+			cpu_config.counter_collection_bounces,
+			cpu_config.measurement_bounces,
+			static_cast<unsigned long long>(cpu_config.counter_collection_frames),
+			static_cast<unsigned long long>(cpu_config.fps_warmup_frames),
+			static_cast<unsigned long long>(cpu_config.fps_measurement_frames),
+			total_frame_time_ms,
+			static_cast<double>(experiment_fps));
 	}
-	std::fprintf(file, "%s,%s,%d,%d,%llu,%llu,%llu,%.6f,%.6f\n",
-		scene_name,
-		source_bvh,
-		counterCollapse ? 1 : 0,
-		waldCollapse ? 1 : 0,
-		static_cast<unsigned long long>(cpu_config.counter_collection_frames),
-		static_cast<unsigned long long>(cpu_config.fps_warmup_frames),
-		static_cast<unsigned long long>(cpu_config.fps_measurement_frames),
-		total_frame_time_ms,
-		static_cast<double>(experiment_fps));
 	std::fclose(file);
 
 	IO::print("Wrote experiment FPS CSV: {}\n"_sv, filename.string().c_str());
@@ -851,6 +880,11 @@ static const char* get_node_type(
 
 void Pathtracer::begin_bvh8_measurement() {
 	counter_mode = false;
+	// The counter pass may intentionally use a shorter path than the timed
+	// render. update() uploads this modified GPU configuration before the next
+	// render call, after the asynchronous BVH8 upload is visible.
+	gpu_config.num_bounces = cpu_config.measurement_bounces;
+	invalidated_gpu_config = true;
 
 	collapseBVH();
 	kernel_trace = &kernel_trace_bvh8;
