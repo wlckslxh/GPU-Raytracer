@@ -142,7 +142,24 @@ Handle<MeshData> AssetManager::add_mesh_data(String source_filename, Array<Trian
 		}
 
 		if (!loaded_bvh8) {
-			BVH2 bvh = BVH::create_from_triangles(mesh_data.triangles);
+			BVH2 bvh = { };
+			bool loaded_bvh2 = false;
+
+			// BVH8 has a separate cache above. Never build or load an intermediate
+			// BVH2 cache in that mode.
+			if (cpu_config.bvh_type != BVHType::BVH8) {
+				String bvh2_filename = BVHLoader::get_bvh2_cache_filename(source_filename.view(), nullptr);
+				loaded_bvh2 = BVHLoader::try_to_load_bvh2_cache(source_filename, bvh2_filename, mesh_data.triangles, &bvh);
+			}
+
+			if (!loaded_bvh2) {
+				bvh = BVH::create_from_triangles(mesh_data.triangles);
+				if (cpu_config.bvh_type != BVHType::BVH8) {
+					String bvh2_filename = BVHLoader::get_bvh2_cache_filename(source_filename.view(), nullptr);
+					BVHLoader::save_bvh2_cache(bvh2_filename, mesh_data.triangles, bvh);
+				}
+			}
+
 			mesh_data.bvh = BVH::create_from_bvh2(std::move(bvh));
 
 			if (cpu_config.bvh_type == BVHType::BVH8) {

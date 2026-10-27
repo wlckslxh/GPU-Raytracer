@@ -16,8 +16,18 @@ String BVHLoader::get_bvh_filename(StringView filename, Allocator * allocator) {
 	return Util::combine_stringviews(filename, StringView::from_c_str(BVH_FILE_EXTENSION), allocator);
 }
 
+String BVHLoader::get_bvh2_cache_filename(StringView filename, Allocator * allocator) {
+	const char * extension = BVH::underlying_bvh_type() == BVHType::SBVH
+		? BVH2_SBVH_CACHE_EXTENSION
+		: BVH2_SAH_CACHE_EXTENSION;
+	return Util::combine_stringviews(filename, StringView::from_c_str(extension), allocator);
+}
+
 String BVHLoader::get_bvh8_filename(StringView filename, Allocator * allocator) {
-	return Util::combine_stringviews(filename, StringView::from_c_str(BVH8_FILE_EXTENSION), allocator);
+	const char * extension = BVH::underlying_bvh_type() == BVHType::SBVH
+		? BVH8_SBVH_CACHE_EXTENSION
+		: BVH8_SAH_CACHE_EXTENSION;
+	return Util::combine_stringviews(filename, StringView::from_c_str(extension), allocator);
 }
 
 struct BVHFileHeader {
@@ -297,6 +307,7 @@ struct BVH8FileHeader {
 	bool     bvh_is_optimized;
 	float    sah_cost_node;
 	float    sah_cost_leaf;
+	float    sbvh_alpha;
 	uint64_t num_triangles;
 	uint64_t triangle_hash;
 	uint64_t num_nodes;
@@ -315,6 +326,119 @@ static uint64_t triangle_hash(const Array<Triangle> & triangles) {
 		hash *= 1099511628211ull;
 	}
 	return hash;
+}
+
+// Unlike the legacy .bvh format, this cache deliberately excludes triangles.
+// The glTF importer remains authoritative for vertex attributes, material IDs,
+// textures, and lights; this only avoids reconstructing the BVH2 topology.
+struct BVH2CacheFileHeader {
+	char     filetype_identifier[4];
+	uint32_t filetype_version;
+	char     underlying_bvh_type;
+	bool     bvh_is_optimized;
+	float    sah_cost_node;
+	float    sah_cost_leaf;
+	float    sbvh_alpha;
+	uint64_t num_triangles;
+	uint64_t triangle_hash;
+	uint64_t num_nodes;
+	uint64_t num_indices;
+};
+
+bool BVHLoader::try_to_load_bvh2_cache(const String & filename, const String & bvh_filename, const Array<Triangle> & triangles, BVH2 * bvh) {
+	if (cpu_config.bvh_force_rebuild ||
+		cpu_config.bvh_type == BVHType::BVH8 ||
+		!IO::file_exists(filename.view()) ||
+		!IO::file_exists(bvh_filename.view()) ||
+		IO::file_is_newer(bvh_filename.view(), filename.view())) {
+		return false;
+	}
+
+	FILE * file = nullptr;
+	errno_t err;
+#ifdef _WIN32
+	err = fopen_s(&file, bvh_filename.c_str(), "rb");
+#else
+	file = fopen(bvh_filename.c_str(), "rb");
+	err = errno;
+#endif
+	if (!file) {
+		IO::print("WARNING: Failed to open BVH2 cache '{}'! ({})\n"_sv, bvh_filename, IO::get_error_message(err));
+		return false;
+	}
+
+	BVH2CacheFileHeader header = { };
+	const bool valid_header =
+		fread(&header, sizeof(header), 1, file) == 1 &&
+		memcmp(header.filetype_identifier, "B2C1", 4) == 0 &&
+		header.filetype_version == BVH2_CACHE_FILETYPE_VERSION &&
+		header.underlying_bvh_type == char(BVH::underlying_bvh_type()) &&
+		header.bvh_is_optimized == cpu_config.enable_bvh_optimization &&
+		header.sah_cost_node == cpu_config.sah_cost_node &&
+		header.sah_cost_leaf == cpu_config.sah_cost_leaf &&
+		header.sbvh_alpha == cpu_config.sbvh_alpha &&
+		header.num_triangles == triangles.size() &&
+		header.triangle_hash == triangle_hash(triangles) &&
+		header.num_nodes > 0 &&
+		header.num_indices > 0;
+
+	if (!valid_header) {
+		fclose(file);
+		return false;
+	}
+
+	bvh->nodes.resize(size_t(header.num_nodes));
+	bvh->indices.resize(size_t(header.num_indices));
+	const bool success =
+		fread(bvh->nodes.data(), sizeof(BVHNode2), bvh->nodes.size(), file) == bvh->nodes.size() &&
+		fread(bvh->indices.data(), sizeof(int), bvh->indices.size(), file) == bvh->indices.size();
+	fclose(file);
+
+	if (!success) {
+		bvh->nodes.clear();
+		bvh->indices.clear();
+		return false;
+	}
+
+	IO::print("Loaded BVH2 cache '{}' from disk\n"_sv, bvh_filename);
+	return true;
+}
+
+bool BVHLoader::save_bvh2_cache(const String & bvh_filename, const Array<Triangle> & triangles, const BVH2 & bvh) {
+	FILE * file = nullptr;
+	errno_t err;
+#ifdef _WIN32
+	err = fopen_s(&file, bvh_filename.c_str(), "wb");
+#else
+	file = fopen(bvh_filename.c_str(), "wb");
+	err = errno;
+#endif
+	if (!file) {
+		IO::print("WARNING: Failed to open BVH2 cache '{}' for writing! ({})\n"_sv, bvh_filename, IO::get_error_message(err));
+		return false;
+	}
+
+	BVH2CacheFileHeader header = { };
+	memcpy(header.filetype_identifier, "B2C1", 4);
+	header.filetype_version    = BVH2_CACHE_FILETYPE_VERSION;
+	header.underlying_bvh_type = char(BVH::underlying_bvh_type());
+	header.bvh_is_optimized    = cpu_config.enable_bvh_optimization;
+	header.sah_cost_node       = cpu_config.sah_cost_node;
+	header.sah_cost_leaf       = cpu_config.sah_cost_leaf;
+	header.sbvh_alpha          = cpu_config.sbvh_alpha;
+	header.num_triangles       = triangles.size();
+	header.triangle_hash       = triangle_hash(triangles);
+	header.num_nodes           = bvh.nodes.size();
+	header.num_indices         = bvh.indices.size();
+
+	const bool success =
+		fwrite(&header, sizeof(header), 1, file) == 1 &&
+		fwrite(bvh.nodes.data(), sizeof(BVHNode2), bvh.nodes.size(), file) == bvh.nodes.size() &&
+		fwrite(bvh.indices.data(), sizeof(int), bvh.indices.size(), file) == bvh.indices.size();
+	fclose(file);
+
+	if (success) IO::print("Saved BVH2 cache '{}' to disk\n"_sv, bvh_filename);
+	return success;
 }
 
 bool BVHLoader::try_to_load_bvh8(const String & filename, const String & bvh_filename, const Array<Triangle> & triangles, BVH8 * bvh) {
@@ -348,6 +472,7 @@ bool BVHLoader::try_to_load_bvh8(const String & filename, const String & bvh_fil
 		header.bvh_is_optimized == cpu_config.enable_bvh_optimization &&
 		header.sah_cost_node == cpu_config.sah_cost_node &&
 		header.sah_cost_leaf == cpu_config.sah_cost_leaf &&
+		header.sbvh_alpha == cpu_config.sbvh_alpha &&
 		header.num_triangles == triangles.size() &&
 		header.triangle_hash == triangle_hash(triangles);
 
@@ -394,6 +519,7 @@ bool BVHLoader::save_bvh8(const String & bvh_filename, const Array<Triangle> & t
 	header.bvh_is_optimized    = cpu_config.enable_bvh_optimization;
 	header.sah_cost_node       = cpu_config.sah_cost_node;
 	header.sah_cost_leaf       = cpu_config.sah_cost_leaf;
+	header.sbvh_alpha          = cpu_config.sbvh_alpha;
 	header.num_triangles       = triangles.size();
 	header.triangle_hash       = triangle_hash(triangles);
 	header.num_nodes           = bvh.nodes.size();
