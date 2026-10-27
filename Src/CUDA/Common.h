@@ -68,7 +68,7 @@ struct GPUConfig {
 
 // Rendering is performance in batches of BATCH_SIZE pixels
 // Larger batches are more efficient, but also require more GPU memory
-#define BATCH_SIZE (1080 * 720)
+#define BATCH_SIZE (2560 * 1440)
 
 
 // Raytracing

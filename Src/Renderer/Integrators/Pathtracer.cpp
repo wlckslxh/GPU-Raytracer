@@ -224,6 +224,7 @@ void Pathtracer::init_module() {
 	kernel_sort                .init(&cuda_module, "kernel_sort");
 	kernel_material_diffuse    .init(&cuda_module, "kernel_material_diffuse");
 	kernel_material_plastic    .init(&cuda_module, "kernel_material_plastic");
+	kernel_material_pbr_metallic_roughness.init(&cuda_module, "kernel_material_pbr_metallic_roughness");
 	kernel_material_dielectric .init(&cuda_module, "kernel_material_dielectric");
 	kernel_material_conductor  .init(&cuda_module, "kernel_material_conductor");
 	kernel_trace_shadow_bvh2   .init(&cuda_module, "kernel_trace_shadow_bvh2");
@@ -254,6 +255,7 @@ void Pathtracer::init_module() {
 	kernel_sort                .set_block_dim(256, 1, 1);
 	kernel_material_diffuse    .set_block_dim(256, 1, 1);
 	kernel_material_plastic    .set_block_dim(256, 1, 1);
+	kernel_material_pbr_metallic_roughness.set_block_dim(256, 1, 1);
 	kernel_material_dielectric .set_block_dim(256, 1, 1);
 	kernel_material_conductor  .set_block_dim(256, 1, 1);
 
@@ -422,6 +424,7 @@ void Pathtracer::resize_init(unsigned frame_buffer_handle, int width, int height
 	kernel_sort               .set_grid_dim(Math::divide_round_up(BATCH_SIZE, kernel_sort               .block_dim_x), 1, 1);
 	kernel_material_diffuse   .set_grid_dim(Math::divide_round_up(BATCH_SIZE, kernel_material_diffuse   .block_dim_x), 1, 1);
 	kernel_material_plastic   .set_grid_dim(Math::divide_round_up(BATCH_SIZE, kernel_material_plastic   .block_dim_x), 1, 1);
+	kernel_material_pbr_metallic_roughness.set_grid_dim(Math::divide_round_up(BATCH_SIZE, kernel_material_pbr_metallic_roughness.block_dim_x), 1, 1);
 	kernel_material_dielectric.set_grid_dim(Math::divide_round_up(BATCH_SIZE, kernel_material_dielectric.block_dim_x), 1, 1);
 	kernel_material_conductor .set_grid_dim(Math::divide_round_up(BATCH_SIZE, kernel_material_conductor .block_dim_x), 1, 1);
 
@@ -643,6 +646,17 @@ void Pathtracer::update(float delta, Allocator * frame_allocator) {
 					cuda_materials[i].plastic.linear_roughness = material.linear_roughness;
 					break;
 				}
+				case Material::Type::PBR_METALLIC_ROUGHNESS: {
+					cuda_materials[i].pbr_metallic_roughness.base_color = material.diffuse;
+					cuda_materials[i].pbr_metallic_roughness.base_color_texture_id = material.texture_handle.handle;
+					cuda_materials[i].pbr_metallic_roughness.metallic = material.metallic;
+					cuda_materials[i].pbr_metallic_roughness.linear_roughness = material.linear_roughness;
+					cuda_materials[i].pbr_metallic_roughness.metallic_roughness_texture_id = material.metallic_roughness_texture_handle.handle;
+					cuda_materials[i].pbr_metallic_roughness.alpha_masked = material.alpha_masked;
+					cuda_materials[i].pbr_metallic_roughness.alpha = material.alpha;
+					cuda_materials[i].pbr_metallic_roughness.alpha_cutoff = material.alpha_cutoff;
+					break;
+				}
 				case Material::Type::DIELECTRIC: {
 					cuda_materials[i].dielectric.medium_id        = material.medium_handle.handle;
 					cuda_materials[i].dielectric.ior              = Math::max(material.index_of_refraction, 1.0001f);
@@ -666,6 +680,7 @@ void Pathtracer::update(float delta, Allocator * frame_allocator) {
 
 		bool had_diffuse    = scene.has_diffuse;
 		bool had_plastic    = scene.has_plastic;
+		bool had_pbr_metallic_roughness = scene.has_pbr_metallic_roughness;
 		bool had_dielectric = scene.has_dielectric;
 		bool had_conductor  = scene.has_conductor;
 		bool had_lights     = scene.has_lights;
@@ -675,6 +690,7 @@ void Pathtracer::update(float delta, Allocator * frame_allocator) {
 		bool material_types_changed =
 			(had_diffuse    ^ scene.has_diffuse) |
 			(had_plastic    ^ scene.has_plastic) |
+			(had_pbr_metallic_roughness ^ scene.has_pbr_metallic_roughness) |
 			(had_dielectric ^ scene.has_dielectric) |
 			(had_conductor  ^ scene.has_conductor);
 
@@ -682,6 +698,7 @@ void Pathtracer::update(float delta, Allocator * frame_allocator) {
 			int num_different_materials =
 				int(scene.has_diffuse) +
 				int(scene.has_plastic) +
+				int(scene.has_pbr_metallic_roughness) +
 				int(scene.has_dielectric) +
 				int(scene.has_conductor);
 			// 2 different Materials can share the same MaterialBuffer, one growing left to right, one growing right to left
@@ -719,6 +736,7 @@ void Pathtracer::update(float delta, Allocator * frame_allocator) {
 			};
 			if (scene.has_diffuse)    set_material_buffer("material_buffer_diffuse");
 			if (scene.has_plastic)    set_material_buffer("material_buffer_plastic");
+			if (scene.has_pbr_metallic_roughness) set_material_buffer("material_buffer_pbr_metallic_roughness");
 			if (scene.has_dielectric) set_material_buffer("material_buffer_dielectric");
 			if (scene.has_conductor)  set_material_buffer("material_buffer_conductor");
 		}
@@ -940,6 +958,9 @@ void Pathtracer::render() {
 			if (scene.has_plastic) {
 				event_pool.record(&event_desc_material_plastic[bounce]);
 				kernel_material_plastic.execute(bounce, sample_index);
+			}
+			if (scene.has_pbr_metallic_roughness) {
+				kernel_material_pbr_metallic_roughness.execute(bounce, sample_index);
 			}
 			if (scene.has_dielectric) {
 				event_pool.record(&event_desc_material_dielectric[bounce]);

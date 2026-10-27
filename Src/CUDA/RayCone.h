@@ -28,6 +28,20 @@ __device__ inline float3 sample_albedo(int bounce, float3 diffuse, int texture_i
 	}
 }
 
+// Data textures such as glTF metallic-roughness maps use the same filtering
+// path as albedo maps, but must not be multiplied by a material colour.
+__device__ inline float4 sample_texture(int bounce, int texture_id, float2 tex_coord, const TextureLOD & lod) {
+	if (texture_id == INVALID) return make_float4(1.0f);
+	if (config.enable_mipmapping) {
+		if (use_anisotropic_texture_sampling(bounce)) {
+			return textures[texture_id].get_grad(tex_coord.x, tex_coord.y, lod.aniso.gradient_1, lod.aniso.gradient_2);
+		} else {
+			return textures[texture_id].get_lod(tex_coord.x, tex_coord.y, lod.iso.lod + textures[texture_id].lod_bias);
+		}
+	}
+	return textures[texture_id].get(tex_coord.x, tex_coord.y);
+}
+
 // Project the Ray Cone onto the Triangle and obtain two axes that describe the resulting ellipse (in world space)
 __device__ inline void ray_cone_get_ellipse_axes(
 	float3 ray_direction,

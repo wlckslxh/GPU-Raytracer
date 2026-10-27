@@ -14,6 +14,7 @@ enum struct MaterialType : char {
 	LIGHT,
 	DIFFUSE,
 	PLASTIC,
+	PBR_METALLIC_ROUGHNESS,
 	DIELECTRIC,
 	CONDUCTOR
 };
@@ -29,6 +30,11 @@ union Material {
 		float4 diffuse_and_texture_id;
 		float  linear_roughness;
 	} plastic;
+	struct {
+		float4 base_color_and_texture_id;
+		float4 metallic_roughness_and_texture_id;
+		float4 alpha_mask_and_cutoff;
+	} pbr_metallic_roughness;
 	struct {
 		float4 medium_ior_and_linear_roughness;
 	} dielectric;
@@ -60,6 +66,17 @@ struct MaterialPlastic {
 	float3 diffuse;
 	int    texture_id;
 	float  linear_roughness;
+};
+
+struct MaterialPBRMetallicRoughness {
+	float3 base_color;
+	int    base_color_texture_id;
+	float  metallic;
+	float  linear_roughness;
+	int    metallic_roughness_texture_id;
+	bool   alpha_masked;
+	float  alpha;
+	float  alpha_cutoff;
 };
 
 struct MaterialDielectric {
@@ -111,6 +128,23 @@ __device__ inline MaterialPlastic material_as_plastic(int material_id) {
 	material.diffuse          = make_float3(diffuse_and_texture_id);
 	material.texture_id       = __float_as_int(diffuse_and_texture_id.w);
 	material.linear_roughness = linear_roughness;
+	return material;
+}
+
+__device__ inline MaterialPBRMetallicRoughness material_as_pbr_metallic_roughness(int material_id) {
+	float4 base_color_and_texture_id = __ldg(&materials[material_id].pbr_metallic_roughness.base_color_and_texture_id);
+	float4 metallic_roughness_and_texture_id = __ldg(&materials[material_id].pbr_metallic_roughness.metallic_roughness_and_texture_id);
+	float4 alpha_mask_and_cutoff = __ldg(&materials[material_id].pbr_metallic_roughness.alpha_mask_and_cutoff);
+
+	MaterialPBRMetallicRoughness material;
+	material.base_color = make_float3(base_color_and_texture_id);
+	material.base_color_texture_id = __float_as_int(base_color_and_texture_id.w);
+	material.metallic = metallic_roughness_and_texture_id.x;
+	material.linear_roughness = metallic_roughness_and_texture_id.y;
+	material.metallic_roughness_texture_id = __float_as_int(metallic_roughness_and_texture_id.z);
+	material.alpha_masked = __float_as_int(alpha_mask_and_cutoff.x) != 0;
+	material.alpha = alpha_mask_and_cutoff.y;
+	material.alpha_cutoff = alpha_mask_and_cutoff.z;
 	return material;
 }
 

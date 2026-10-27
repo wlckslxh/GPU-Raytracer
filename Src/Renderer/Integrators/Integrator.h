@@ -105,6 +105,18 @@ struct Integrator {
 			float   linear_roughness;
 		} plastic;
 		struct {
+			Vector3 base_color;
+			int     base_color_texture_id;
+			float   metallic;
+			float   linear_roughness;
+			int     metallic_roughness_texture_id;
+			int     alpha_masked;
+			float   alpha;
+			float   alpha_cutoff;
+			float   padding_0;
+			float   padding_1;
+		} pbr_metallic_roughness;
+		struct {
 			int   medium_id;
 			float ior;
 			float linear_roughness;

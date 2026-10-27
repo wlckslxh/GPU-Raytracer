@@ -74,6 +74,7 @@ using PackedMaterialBuffer = size_t;
 
 __device__ __constant__ PackedMaterialBuffer material_buffer_diffuse;
 __device__ __constant__ PackedMaterialBuffer material_buffer_plastic;
+__device__ __constant__ PackedMaterialBuffer material_buffer_pbr_metallic_roughness;
 __device__ __constant__ PackedMaterialBuffer material_buffer_dielectric;
 __device__ __constant__ PackedMaterialBuffer material_buffer_conductor;
 
@@ -104,6 +105,7 @@ struct BufferSizes {
 	int trace     [MAX_BOUNCES];
 	int diffuse   [MAX_BOUNCES];
 	int plastic   [MAX_BOUNCES];
+	int pbr_metallic_roughness[MAX_BOUNCES];
 	int dielectric[MAX_BOUNCES];
 	int conductor [MAX_BOUNCES];
 	int shadow    [MAX_BOUNCES];
@@ -457,6 +459,7 @@ extern "C" __global__ void kernel_sort(int bounce, int sample_index) {
 	switch (material_type) {
 		case MaterialType::DIFFUSE:    material_buffer_write(material_buffer_diffuse,    &buffer_sizes.diffuse   [bounce]); break;
 		case MaterialType::PLASTIC:    material_buffer_write(material_buffer_plastic,    &buffer_sizes.plastic   [bounce]); break;
+		case MaterialType::PBR_METALLIC_ROUGHNESS: material_buffer_write(material_buffer_pbr_metallic_roughness, &buffer_sizes.pbr_metallic_roughness[bounce]); break;
 		case MaterialType::DIELECTRIC: material_buffer_write(material_buffer_dielectric, &buffer_sizes.dielectric[bounce]); break;
 		case MaterialType::CONDUCTOR:  material_buffer_write(material_buffer_conductor,  &buffer_sizes.conductor [bounce]); break;
 	}
@@ -790,6 +793,31 @@ __device__ void shade_material(int bounce, int sample_index, int buffer_size) {
 		aov_framebuffer_set(AOVType::ALBEDO, pixel_index, make_float4(1.0f));
 	}
 
+	// Alpha-tested glTF geometry is present in the BVH as ordinary triangles.
+	// Continue the incoming ray when its texel fails coverage, equivalent to an
+	// any-hit alpha rejection in a hardware ray tracer.
+	if (bsdf.is_alpha_masked_out()) {
+		int index_out = atomicAdd(&buffer_sizes.trace[bounce + 1], 1);
+		TraceBuffer * ray_buffer_trace = get_ray_buffer_trace(bounce + 1);
+
+		float3 origin_out = ray_origin_epsilon_offset(hit_point, ray_direction, geometric_normal);
+		ray_buffer_trace->traversal_data.ray_origin   .set(index_out, origin_out);
+		ray_buffer_trace->traversal_data.ray_direction.set(index_out, ray_direction);
+
+		if (medium_id != INVALID) {
+			ray_buffer_trace->medium[index_out] = medium_id;
+		}
+		if (config.enable_mipmapping) {
+			ray_buffer_trace->cone_angle[index_out] = cone_angle;
+			ray_buffer_trace->cone_width[index_out] = cone_width;
+		}
+
+		unsigned flags = medium_id != INVALID ? FLAG_INSIDE_MEDIUM : 0;
+		ray_buffer_trace->pixel_index_and_flags[index_out] = pixel_index | flags;
+		ray_buffer_trace->throughput.set(index_out, throughput);
+		return;
+	}
+
 	if (bounce == 0) {
 		aov_framebuffer_set(AOVType::NORMAL,   pixel_index, make_float4(normal));
 		aov_framebuffer_set(AOVType::POSITION, pixel_index, make_float4(hit_point));
@@ -871,6 +899,10 @@ extern "C" __global__ void kernel_material_diffuse(int bounce, int sample_index)
 
 extern "C" __global__ void kernel_material_plastic(int bounce, int sample_index) {
 	shade_material<BSDFPlastic, &material_buffer_plastic>(bounce, sample_index, buffer_sizes.plastic[bounce]);
+}
+
+extern "C" __global__ void kernel_material_pbr_metallic_roughness(int bounce, int sample_index) {
+	shade_material<BSDFPBRMetallicRoughness, &material_buffer_pbr_metallic_roughness>(bounce, sample_index, buffer_sizes.pbr_metallic_roughness[bounce]);
 }
 
 extern "C" __global__ void kernel_material_dielectric(int bounce, int sample_index) {

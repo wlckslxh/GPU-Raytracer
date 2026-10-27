@@ -76,9 +76,9 @@ static void init_integrator(OwnPtr<Integrator> & integrator, const Window & wind
 int main(int num_args, char ** args) {
 	Args::parse(num_args, args);
 	if (cpu_config.scene_filenames.size() == 0) {
-		//cpu_config.scene_filenames.push_back("Data/models_0930/bistroexterior_mod_etc1s/bistroexterior_mod.json"_sv);
+		cpu_config.scene_filenames.push_back("Data/models_0930/bistroexterior_mod_etc1s/bistroexterior_mod.json"_sv);
 		//cpu_config.scene_filenames.push_back("Data/models_0930/intelSponza_mod_etc1s/intelSponza_mod.json"_sv);
-		cpu_config.scene_filenames.push_back("Data/models_0930/sponza_mod_etc1s/sponza_mod.json"_sv);
+		//cpu_config.scene_filenames.push_back("Data/models_0930/sponza_mod_etc1s/sponza_mod.json"_sv);
 	}
 	if (cpu_config.sky_filename.is_empty()) {
 		cpu_config.sky_filename = "Data/Skies/sky_15.hdr"_sv;
@@ -595,7 +595,7 @@ static void draw_gui(Window & window, Integrator & integrator) {
 				if (ImGui::CollapsingHeader("Material##MaterialHeader", ImGuiTreeNodeFlags_DefaultOpen)) {
 					ImGui::Text("Name: %s", material.name.data());
 
-					integrator.invalidated_materials |= ImGui_Combo("Type", &material.type, "Light\0Diffuse\0Plastic\0Dielectric\0Conductor\0");
+					integrator.invalidated_materials |= ImGui_Combo("Type", &material.type, "Light\0Diffuse\0Plastic\0PBR Metallic-Roughness\0Dielectric\0Conductor\0");
 
 					const char * texture_name = "None";
 					if (material.texture_handle.handle != INVALID) {
@@ -624,6 +624,12 @@ static void draw_gui(Window & window, Integrator & integrator) {
 							material.texture_handle.handle = ImGui_Combo("Texture", texture_name, integrator.scene.asset_manager.textures, true, material.texture_handle.handle, [&integrator](int index) {
 								integrator.invalidated_materials = true;
 							});
+							integrator.invalidated_materials |= ImGui::SliderFloat("Roughness", &material.linear_roughness, 0.0f, 1.0f);
+							break;
+						}
+						case Material::Type::PBR_METALLIC_ROUGHNESS: {
+							integrator.invalidated_materials |= ImGui::ColorEdit3("Base Color", &material.diffuse.x);
+							integrator.invalidated_materials |= ImGui::SliderFloat("Metallic", &material.metallic, 0.0f, 1.0f);
 							integrator.invalidated_materials |= ImGui::SliderFloat("Roughness", &material.linear_roughness, 0.0f, 1.0f);
 							break;
 						}

@@ -360,9 +360,22 @@ static Handle<Material> import_material(
 		material.diffuse = Vector3(
 			float(base_color[0]), float(base_color[1]), float(base_color[2]));
 	}
+	if (base_color.size() >= 4) {
+		material.alpha = float(base_color[3]);
+	}
+	material.alpha_masked = gltf_material.alphaMode == "MASK" || gltf_material.alphaMode == "BLEND";
+	material.alpha_cutoff = gltf_material.alphaMode == "MASK" ? float(gltf_material.alphaCutoff) : 0.5f;
+	material.linear_roughness = float(gltf_material.pbrMetallicRoughness.roughnessFactor);
+	material.metallic = float(gltf_material.pbrMetallicRoughness.metallicFactor);
 	material.texture_handle = import_texture(
 		model,
 		gltf_material.pbrMetallicRoughness.baseColorTexture.index,
+		scene,
+		texture_handles,
+		gltf_directory);
+	material.metallic_roughness_texture_handle = import_texture(
+		model,
+		gltf_material.pbrMetallicRoughness.metallicRoughnessTexture.index,
 		scene,
 		texture_handles,
 		gltf_directory);
@@ -374,7 +387,29 @@ static Handle<Material> import_material(
 		gltf_directory);
 
 	const std::vector<double> & emission = gltf_material.emissiveFactor;
-	if (emission.size() >= 3 && (emission[0] != 0.0 || emission[1] != 0.0 || emission[2] != 0.0)) {
+	const auto get_extra_number = [&gltf_material](const char * name, float * value) {
+		if (!gltf_material.extras.IsObject() || !gltf_material.extras.Has(name)) return false;
+		const tinygltf::Value & extra = gltf_material.extras.Get(name);
+		if (!extra.IsNumber()) return false;
+		*value = float(extra.GetNumberAsDouble());
+		return true;
+	};
+
+	float reflectance = 0.0f;
+	float refractance = 0.0f;
+	get_extra_number("Kr", &reflectance);
+	get_extra_number("Kt", &refractance);
+
+	if (reflectance > 0.0f) {
+		material.type = Material::Type::CONDUCTOR;
+		material.linear_roughness = 0.001f;
+		material.eta = Vector3(0.155f, 0.116f, 0.138f);
+		material.k   = Vector3(4.828f, 3.122f, 2.146f);
+	} else if (refractance > 0.0f) {
+		material.type = Material::Type::DIELECTRIC;
+		material.index_of_refraction = 1.5f;
+		material.linear_roughness = 0.001f;
+	} else if (emission.size() >= 3 && (emission[0] != 0.0 || emission[1] != 0.0 || emission[2] != 0.0)) {
 		material.emission = Vector3(float(emission[0]), float(emission[1]), float(emission[2]));
 		if (gltf_material.extensions.find("KHR_materials_emissive_strength") != gltf_material.extensions.end()) {
 			const tinygltf::Value & extension = gltf_material.extensions.at("KHR_materials_emissive_strength");
@@ -389,6 +424,8 @@ static Handle<Material> import_material(
 		if (gltf_material.emissiveTexture.index < 0) {
 			material.type = Material::Type::LIGHT;
 		}
+	} else {
+		material.type = Material::Type::PBR_METALLIC_ROUGHNESS;
 	}
 
 	material_handles[material_index] = scene.asset_manager.add_material(std::move(material));
