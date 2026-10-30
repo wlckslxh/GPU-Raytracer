@@ -15,6 +15,7 @@ __device__ __constant__ int           light_triangle_count;
 struct PunctualLight {
 	float4 position_and_range;
 	float4 color_and_intensity;
+	float4 sg_pika_parameters;
 };
 
 __device__ __constant__ const PunctualLight * punctual_lights;

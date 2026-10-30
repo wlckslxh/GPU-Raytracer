@@ -248,6 +248,7 @@ struct Pathtracer final : Integrator {
 	struct CUDAPunctualLight {
 		Vector4 position_and_range;
 		Vector4 color_and_intensity;
+		Vector4 sg_pika_parameters; // x: compatibility attenuation enabled
 	};
 	CUDAMemory::Ptr<CUDAPunctualLight> ptr_punctual_lights;
 

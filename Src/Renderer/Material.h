@@ -24,6 +24,7 @@ struct Material {
 
 	Vector3 emission;
 	Handle<Texture> emissive_texture_handle;
+	bool            emissive_texture_is_srgb = false;
 
 	Vector3         diffuse = Vector3(1.0f, 1.0f, 1.0f);
 	Handle<Texture> texture_handle;
@@ -31,11 +32,22 @@ struct Material {
 	// and metallic in B; diffuse/texture_handle remain the base-color inputs.
 	float           metallic = 0.0f;
 	Handle<Texture> metallic_roughness_texture_handle;
+	Handle<Texture> normal_texture_handle;
+	// glTF occlusion uses the red channel and attenuates indirect diffuse
+	// illumination only.  Keep it separate from the metallic/roughness map.
+	Handle<Texture> occlusion_texture_handle;
+	float           occlusion_strength = 1.0f;
+	// KTX2 base-colour maps in models_0930 are stored in sRGB. Data maps stay
+	// linear and therefore never set this flag.
+	bool            base_color_texture_is_srgb = false;
 
-	// glTF alpha coverage. BLEND falls back to deterministic cutout.
+	// glTF alpha coverage. MASK uses alpha_cutoff; BLEND is kept distinct so
+	// importers do not accidentally turn ordinary BLEND-tagged opaque meshes
+	// into 0.5 cutouts.
 	float alpha        = 1.0f;
 	float alpha_cutoff = 0.5f;
 	bool  alpha_masked = false;
+	bool  alpha_blended = false;
 
 	Handle<Medium> medium_handle;
 	float          index_of_refraction = 1.33f;

@@ -14,6 +14,10 @@ struct PunctualLight {
 	Vector3 color;
 	float   intensity = 1.0f;
 	float   range = 0.0f;
+	// `models_0930` originates from SG_PIKA and uses its own `extras.radius`
+	// light-windowing/attenuation convention.  Keep this per-light so ordinary
+	// KHR_lights_punctual assets retain the physically-based inverse-square path.
+	bool    use_sg_pika_attenuation = false;
 };
 
 struct DirectionalLight {

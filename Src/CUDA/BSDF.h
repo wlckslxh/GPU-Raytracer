@@ -212,7 +212,13 @@ struct BSDFPBRMetallicRoughness {
 	float3 base_color;
 	float  metallic;
 	float  linear_roughness;
+	float  occlusion;
 	bool   alpha_masked_out;
+
+	__device__ static float srgb_to_linear(float value) {
+		if (value <= 0.04045f) return value / 12.92f;
+		return powf((value + 0.055f) / 1.055f, 2.4f);
+	}
 
 	__device__ void init(int bounce, bool entering_material, int material_id) {
 		material = material_as_pbr_metallic_roughness(material_id);
@@ -232,6 +238,11 @@ struct BSDFPBRMetallicRoughness {
 
 	__device__ void calc_albedo(int bounce, int pixel_index, float3 & throughput, float2 tex_coord, const TextureLOD & lod) {
 		float4 base_color_texture = sample_texture(bounce, material.base_color_texture_id, tex_coord, lod);
+		if (material.base_color_texture_is_srgb) {
+			base_color_texture.x = srgb_to_linear(base_color_texture.x);
+			base_color_texture.y = srgb_to_linear(base_color_texture.y);
+			base_color_texture.z = srgb_to_linear(base_color_texture.z);
+		}
 		base_color = material.base_color * make_float3(base_color_texture);
 		alpha_masked_out = material.alpha_masked && material.alpha * base_color_texture.w < material.alpha_cutoff;
 
@@ -239,6 +250,18 @@ struct BSDFPBRMetallicRoughness {
 		// glTF defines G = perceptual roughness and B = metallic.
 		metallic = clamp(material.metallic * metallic_roughness.z, 0.0f, 1.0f);
 		linear_roughness = clamp(material.linear_roughness * metallic_roughness.y, 0.001f, 1.0f);
+		occlusion = 1.0f;
+		if (material.occlusion_texture_id != INVALID) {
+			const float sampled_occlusion = sample_texture(bounce, material.occlusion_texture_id, tex_coord, lod).x;
+			occlusion = lerp(1.0f, clamp(sampled_occlusion, 0.0f, 1.0f), material.occlusion_strength);
+		}
+
+		if (material.normal_texture_id != INVALID) {
+			float3 tangent_normal = make_float3(sample_texture(bounce, material.normal_texture_id, tex_coord, lod)) * 2.0f - make_float3(1.0f);
+			normal = normalize(tangent * tangent_normal.x + bitangent * tangent_normal.y + normal * tangent_normal.z);
+			tangent = normalize(tangent - normal * dot(normal, tangent));
+			bitangent = normalize(cross(normal, tangent));
+		}
 
 		if (bounce == 0) {
 			aov_framebuffer_set(AOVType::ALBEDO, pixel_index, make_float4(base_color));
@@ -280,7 +303,8 @@ struct BSDFPBRMetallicRoughness {
 		float2 random_direction = random<SampleDimension::BSDF_1>(pixel_index, bounce, sample_index);
 
 		float3 omega_o;
-		if (random_lobe < specular_probability()) {
+		const bool sampled_specular = random_lobe < specular_probability();
+		if (sampled_specular) {
 			float alpha = roughness_to_alpha(linear_roughness);
 			float3 omega_m = sample_visible_normals_ggx(omega_i, alpha, alpha, random_direction.x, random_direction.y);
 			omega_o = reflect_direction(omega_i, omega_m);
@@ -292,6 +316,9 @@ struct BSDFPBRMetallicRoughness {
 		if (!eval_local(omega_o, bsdf, pdf)) return false;
 
 		throughput *= bsdf / pdf;
+		// glTF AO represents precomputed local occlusion.  Applying it only to
+		// the diffuse continuation preserves direct-light and specular terms.
+		if (!sampled_specular) throughput *= occlusion;
 		direction_out = local_to_world(omega_o, tangent, bitangent, normal);
 		return true;
 	}

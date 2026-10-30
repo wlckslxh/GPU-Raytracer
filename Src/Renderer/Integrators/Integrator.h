@@ -113,8 +113,8 @@ struct Integrator {
 			int     alpha_masked;
 			float   alpha;
 			float   alpha_cutoff;
-			float   padding_0;
-			float   padding_1;
+			int     base_color_texture_is_srgb;
+			float   occlusion_strength;
 		} pbr_metallic_roughness;
 		struct {
 			int   medium_id;
@@ -133,6 +133,9 @@ struct Integrator {
 	CUDAMemory::Ptr<Material::Type> ptr_material_types;
 	CUDAMemory::Ptr<CUDAMaterial>   ptr_materials;
 	CUDAMemory::Ptr<int>            ptr_material_emissive_texture_ids;
+	CUDAMemory::Ptr<int>            ptr_material_emissive_texture_is_srgb;
+	CUDAMemory::Ptr<int>            ptr_material_normal_texture_ids;
+	CUDAMemory::Ptr<int>            ptr_material_occlusion_texture_ids;
 	CUDAMemory::Ptr<Vector4>        ptr_material_emissions;
 
 	struct alignas(float4) CUDAMedium {

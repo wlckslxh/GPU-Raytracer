@@ -47,6 +47,9 @@ union Material {
 __device__ __constant__ const MaterialType * material_types;
 __device__ __constant__ const Material     * materials;
 __device__ __constant__ const int          * material_emissive_texture_ids;
+__device__ __constant__ const int          * material_emissive_texture_is_srgb;
+__device__ __constant__ const int          * material_normal_texture_ids;
+__device__ __constant__ const int          * material_occlusion_texture_ids;
 __device__ __constant__ const float4       * material_emissions;
 
 __device__ inline MaterialType material_get_type(int material_id) {
@@ -74,9 +77,13 @@ struct MaterialPBRMetallicRoughness {
 	float  metallic;
 	float  linear_roughness;
 	int    metallic_roughness_texture_id;
+	int    normal_texture_id;
+	int    occlusion_texture_id;
+	float  occlusion_strength;
 	bool   alpha_masked;
 	float  alpha;
 	float  alpha_cutoff;
+	bool   base_color_texture_is_srgb;
 };
 
 struct MaterialDielectric {
@@ -102,7 +109,14 @@ __device__ inline MaterialLight material_as_light(int material_id) {
 __device__ inline float3 material_get_emission(int material_id, float s, float t) {
 	int texture_id = __ldg(&material_emissive_texture_ids[material_id]);
 	if (texture_id == INVALID) return make_float3(0.0f);
-	return make_float3(__ldg(&material_emissions[material_id])) * make_float3(textures[texture_id].get(s, t));
+	float3 emission_texture = make_float3(textures[texture_id].get(s, t));
+	if (__ldg(&material_emissive_texture_is_srgb[material_id]) != 0) {
+		emission_texture = make_float3(
+			emission_texture.x <= 0.04045f ? emission_texture.x / 12.92f : powf((emission_texture.x + 0.055f) / 1.055f, 2.4f),
+			emission_texture.y <= 0.04045f ? emission_texture.y / 12.92f : powf((emission_texture.y + 0.055f) / 1.055f, 2.4f),
+			emission_texture.z <= 0.04045f ? emission_texture.z / 12.92f : powf((emission_texture.z + 0.055f) / 1.055f, 2.4f));
+	}
+	return make_float3(__ldg(&material_emissions[material_id])) * emission_texture;
 }
 
 // Triangle selection uses this factor as its approximate emission weight;
@@ -142,9 +156,13 @@ __device__ inline MaterialPBRMetallicRoughness material_as_pbr_metallic_roughnes
 	material.metallic = metallic_roughness_and_texture_id.x;
 	material.linear_roughness = metallic_roughness_and_texture_id.y;
 	material.metallic_roughness_texture_id = __float_as_int(metallic_roughness_and_texture_id.z);
+	material.normal_texture_id = __ldg(&material_normal_texture_ids[material_id]);
+	material.occlusion_texture_id = __ldg(&material_occlusion_texture_ids[material_id]);
 	material.alpha_masked = __float_as_int(alpha_mask_and_cutoff.x) != 0;
 	material.alpha = alpha_mask_and_cutoff.y;
 	material.alpha_cutoff = alpha_mask_and_cutoff.z;
+	material.base_color_texture_is_srgb = __float_as_int(alpha_mask_and_cutoff.w) != 0;
+	material.occlusion_strength = metallic_roughness_and_texture_id.w;
 	return material;
 }
 

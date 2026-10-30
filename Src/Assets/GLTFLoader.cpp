@@ -270,6 +270,18 @@ static String make_string(const std::string & value, const char * fallback) {
 	return value.empty() ? String(fallback) : String(value.c_str(), value.size());
 }
 
+static bool is_ktx2_texture(const tinygltf::Model & model, int texture_index) {
+	if (texture_index < 0 || size_t(texture_index) >= model.textures.size()) return false;
+	const tinygltf::Texture & texture = model.textures[texture_index];
+	if (texture.source < 0 || size_t(texture.source) >= model.images.size()) return false;
+	const std::string & uri = model.images[texture.source].uri;
+	const size_t dot = uri.find_last_of('.');
+	if (dot == std::string::npos) return false;
+	std::string extension = uri.substr(dot + 1);
+	std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+	return extension == "ktx2";
+}
+
 static Handle<Texture> import_texture(
 	const tinygltf::Model & model,
 	int texture_index,
@@ -363,7 +375,13 @@ static Handle<Material> import_material(
 	if (base_color.size() >= 4) {
 		material.alpha = float(base_color[3]);
 	}
-	material.alpha_masked = gltf_material.alphaMode == "MASK" || gltf_material.alphaMode == "BLEND";
+	// MASK is binary coverage in glTF. BLEND is alpha compositing and must not
+	// be treated as a 0.5 cutout: many Blender-exported opaque materials use
+	// BLEND, which otherwise punches holes through floors and walls.
+	// The CUDA path tracer currently has no material-aware any-hit path for
+	// transparent/shadow rays, so BLEND is retained as an opaque fallback.
+	material.alpha_masked = gltf_material.alphaMode == "MASK";
+	material.alpha_blended = gltf_material.alphaMode == "BLEND";
 	material.alpha_cutoff = gltf_material.alphaMode == "MASK" ? float(gltf_material.alphaCutoff) : 0.5f;
 	material.linear_roughness = float(gltf_material.pbrMetallicRoughness.roughnessFactor);
 	material.metallic = float(gltf_material.pbrMetallicRoughness.metallicFactor);
@@ -373,18 +391,35 @@ static Handle<Material> import_material(
 		scene,
 		texture_handles,
 		gltf_directory);
+	// Non-KTX images are converted to linear during texture loading. KTX2 is
+	// kept compressed and therefore needs this conversion in the PBR BSDF.
+	material.base_color_texture_is_srgb = is_ktx2_texture(model, gltf_material.pbrMetallicRoughness.baseColorTexture.index);
 	material.metallic_roughness_texture_handle = import_texture(
 		model,
 		gltf_material.pbrMetallicRoughness.metallicRoughnessTexture.index,
 		scene,
 		texture_handles,
 		gltf_directory);
+	material.normal_texture_handle = import_texture(
+		model,
+		gltf_material.normalTexture.index,
+		scene,
+		texture_handles,
+		gltf_directory);
+	material.occlusion_texture_handle = import_texture(
+		model,
+		gltf_material.occlusionTexture.index,
+		scene,
+		texture_handles,
+		gltf_directory);
+	material.occlusion_strength = std::clamp(float(gltf_material.occlusionTexture.strength), 0.0f, 1.0f);
 	material.emissive_texture_handle = import_texture(
 		model,
 		gltf_material.emissiveTexture.index,
 		scene,
 		texture_handles,
 		gltf_directory);
+	material.emissive_texture_is_srgb = is_ktx2_texture(model, gltf_material.emissiveTexture.index);
 
 	const std::vector<double> & emission = gltf_material.emissiveFactor;
 	const auto get_extra_number = [&gltf_material](const char * name, float * value) {
@@ -419,10 +454,12 @@ static Handle<Material> import_material(
 			}
 		}
 
-		// An emissive texture is a per-UV self-emission term. Keep the surface
-		// material so its base-color/alpha texture still shades normally.
+		// An emissive texture is a per-UV self-emission term. Preserve PBR
+		// shading for that surface; only uniform emitters use the LIGHT BSDF.
 		if (gltf_material.emissiveTexture.index < 0) {
 			material.type = Material::Type::LIGHT;
+		} else {
+			material.type = Material::Type::PBR_METALLIC_ROUGHNESS;
 		}
 	} else {
 		material.type = Material::Type::PBR_METALLIC_ROUGHNESS;
@@ -434,11 +471,20 @@ static Handle<Material> import_material(
 
 // Import glTF punctual lights as analytic lights instead of synthesizing
 // emissive geometry.
+static bool uses_sg_pika_light_metadata(const tinygltf::Model & model) {
+	for (const tinygltf::Light & light : model.lights) {
+		if (!light.extras.IsObject()) continue;
+		if (light.extras.Has("intensity") || light.extras.Has("radius") || light.extras.Has("type")) return true;
+	}
+	return false;
+}
+
 static void append_punctual_point_light(
 	const tinygltf::Model & model,
 	const tinygltf::Node & node,
 	const Matrix4 & world_transform,
-	Scene & scene)
+	Scene & scene,
+	bool use_sg_pika_compatibility)
 {
 	auto extension_it = node.extensions.find("KHR_lights_punctual");
 	if (extension_it == node.extensions.end()) return;
@@ -475,18 +521,23 @@ static void append_punctual_point_light(
 		);
 	}
 
-	// The models_0930 assets retain Blender/glTF's physical intensity in the
-	// standard field, but their Vulkan renderer uses the artist-authored
-	// normalized value in extras.intensity.  Prefer that project-specific value
-	// when it is present; ordinary glTF files still use the standard field.
+	// SG_PIKA treats intensity as 1 by default and only overrides it with its
+	// project-specific extras.intensity.  Preserve that convention only for a
+	// model that advertises SG_PIKA light metadata; regular glTF remains on the
+	// standard KHR_lights_punctual intensity path.
 	float intensity = float(gltf_light.intensity);
+	bool has_custom_intensity = false;
 	if (gltf_light.extras.IsObject() && gltf_light.extras.Has("intensity")) {
 		const tinygltf::Value & intensity_value = gltf_light.extras.Get("intensity");
 		if (intensity_value.IsNumber()) {
 			const float custom_intensity = float(intensity_value.GetNumberAsDouble());
-			if (std::isfinite(custom_intensity)) intensity = custom_intensity;
+			if (std::isfinite(custom_intensity)) {
+				intensity = custom_intensity;
+				has_custom_intensity = true;
+			}
 		}
 	}
+	if (use_sg_pika_compatibility && !has_custom_intensity) intensity = 1.0f;
 	if (!std::isfinite(intensity) || intensity <= 0.0f) return;
 
 	if (gltf_light.type == "directional") {
@@ -510,7 +561,8 @@ static void append_punctual_point_light(
 	}
 
 	scene.punctual_lights.emplace_back(PunctualLight {
-		Matrix4::transform_position(world_transform, Vector3(0.0f)), colour, intensity, range });
+		Matrix4::transform_position(world_transform, Vector3(0.0f)), colour, intensity, range,
+		use_sg_pika_compatibility && range > 0.0f });
 }
 
 static void append_node_to_single_blas(
@@ -527,7 +579,7 @@ static void append_node_to_single_blas(
 	if (node_index < 0 || size_t(node_index) >= model.nodes.size()) return;
 	const tinygltf::Node & node = model.nodes[node_index];
 	const Matrix4 transform = parent_transform * get_node_transform(node);
-	append_punctual_point_light(model, node, transform, scene);
+	append_punctual_point_light(model, node, transform, scene, uses_sg_pika_light_metadata(model));
 
 	if (node.mesh >= 0 && size_t(node.mesh) < model.meshes.size()) {
 		for (const tinygltf::Primitive & primitive : model.meshes[node.mesh].primitives) {

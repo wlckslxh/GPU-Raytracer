@@ -580,32 +580,59 @@ __device__ void next_event_estimation_punctual(
 ) {
 	if (punctual_light_count <= 0) return;
 
-	float u = random<SampleDimension::NEE_PUNCTUAL>(pixel_index, bounce, sample_index).x;
-	int light_index = min(int(u * punctual_light_count), punctual_light_count - 1);
-	PunctualLight light = punctual_lights[light_index];
+	for (int light_index = 0; light_index < punctual_light_count; ++light_index) {
+		PunctualLight light = punctual_lights[light_index];
 
-	float3 light_position = make_float3(light.position_and_range);
-	float3 to_light = light_position - hit_point;
-	float distance_to_light = length(to_light);
-	float range = light.position_and_range.w;
-	if (distance_to_light <= 0.0f || (range > 0.0f && distance_to_light > range)) return;
-	to_light /= distance_to_light;
+		float3 light_position = make_float3(light.position_and_range);
+		float3 to_light = light_position - hit_point;
+		float distance_to_light = length(to_light);
+		float range = light.position_and_range.w;
+		if (distance_to_light <= 0.0f || (range > 0.0f && distance_to_light > range)) continue;
+		to_light /= distance_to_light;
 
-	float3 bsdf_value;
-	float bsdf_pdf;
-	if (!bsdf.eval(to_light, dot(to_light, normal), bsdf_value, bsdf_pdf)) return;
+		float3 bsdf_value;
+		float bsdf_pdf;
+		if (!bsdf.eval(to_light, dot(to_light, normal), bsdf_value, bsdf_pdf)) continue;
 
-	float3 radiant_intensity = make_float3(light.color_and_intensity) * light.color_and_intensity.w;
-	float3 illumination = throughput * bsdf_value * radiant_intensity
-		* (float(punctual_light_count) / square(distance_to_light));
+		float3 radiant_intensity = make_float3(light.color_and_intensity) * light.color_and_intensity.w;
+		float attenuation = 1.0f / square(distance_to_light);
+		if (light.sg_pika_parameters.x > 0.5f && range > 0.0f) {
+			// Match SG_PIKA's artist-oriented bounded attenuation. This is kept
+			// isolated from normal KHR_lights_punctual assets, which use inverse-square.
+			const float alpha = 0.6f;
+			const float beta = 0.8f;
+			const float gamma = 0.05f;
+			const float window = square(fmaxf(0.0f, 1.0f - powf(distance_to_light / range, 4.0f)));
+			float curve;
+			if (distance_to_light <= range * alpha) {
+				const float m = distance_to_light / (alpha * range);
+				const float n = 1.0f - 1.0f / beta;
+				curve = 1.0f / (m * n * (m - 2.0f) + 1.0f);
+			} else {
+				const float m = alpha * range;
+				const float n = 1.0f / beta;
+				const float intensity_max = fmaxf(radiant_intensity.x, fmaxf(radiant_intensity.y, radiant_intensity.z));
+				const float denominator = (1.0f / square(range - m)) * (intensity_max / gamma - n) * square(distance_to_light - m) + n;
+				curve = 1.0f / denominator;
+			}
+			attenuation = window * clamp(curve, 0.001f, 1.0f);
+		}
+		float3 illumination = throughput * bsdf_value * radiant_intensity * attenuation;
 
-	hit_point = ray_origin_epsilon_offset(hit_point, to_light, geometric_normal);
-	int shadow_ray_index = atomicAdd(&buffer_sizes.shadow[bounce], 1);
-	ray_buffer_shadow.traversal_data.ray_origin.set(shadow_ray_index, hit_point);
-	ray_buffer_shadow.traversal_data.ray_direction.set(shadow_ray_index, to_light);
-	ray_buffer_shadow.traversal_data.max_distance[shadow_ray_index] = distance_to_light;
-	ray_buffer_shadow.illumination_and_pixel_index[shadow_ray_index] = make_float4(
-		illumination.x, illumination.y, illumination.z, __int_as_float(pixel_index));
+		float3 shadow_ray_origin = ray_origin_epsilon_offset(hit_point, to_light, geometric_normal);
+		// The Bistro assets place several analytic point lights inside their visible
+		// lantern meshes.  Match SG_PIKA's lightBias convention: keep the lighting
+		// distance for attenuation, but stop the shadow segment shortly before the
+		// analytic light position so that its enclosing fixture cannot self-occlude it.
+		constexpr float punctual_light_endpoint_bias = 0.5f;
+		float shadow_max_distance = fmaxf(0.0f, distance_to_light - punctual_light_endpoint_bias);
+		int shadow_ray_index = atomicAdd(&buffer_sizes.shadow[bounce], 1);
+		ray_buffer_shadow.traversal_data.ray_origin.set(shadow_ray_index, shadow_ray_origin);
+		ray_buffer_shadow.traversal_data.ray_direction.set(shadow_ray_index, to_light);
+		ray_buffer_shadow.traversal_data.max_distance[shadow_ray_index] = shadow_max_distance;
+		ray_buffer_shadow.illumination_and_pixel_index[shadow_ray_index] = make_float4(
+			illumination.x, illumination.y, illumination.z, __int_as_float(pixel_index));
+	}
 }
 
 template<typename BSDF>
@@ -621,29 +648,29 @@ __device__ void next_event_estimation_directional(
 ) {
 	if (directional_light_count <= 0) return;
 
-	float u = random<SampleDimension::NEE_DIRECTIONAL>(pixel_index, bounce, sample_index).x;
-	int light_index = min(int(u * directional_light_count), directional_light_count - 1);
-	DirectionalLight light = directional_lights[light_index];
-	float3 to_light = -make_float3(light.direction);
+	for (int light_index = 0; light_index < directional_light_count; ++light_index) {
+		DirectionalLight light = directional_lights[light_index];
+		float3 to_light = -make_float3(light.direction);
 
-	float3 bsdf_value;
-	float bsdf_pdf;
-	if (!bsdf.eval(to_light, dot(to_light, normal), bsdf_value, bsdf_pdf)) return;
+		float3 bsdf_value;
+		float bsdf_pdf;
+		if (!bsdf.eval(to_light, dot(to_light, normal), bsdf_value, bsdf_pdf)) continue;
 
-	float3 radiance = make_float3(light.color_and_intensity) * light.color_and_intensity.w;
-	float3 illumination = throughput * bsdf_value * radiance * float(directional_light_count);
+		float3 radiance = make_float3(light.color_and_intensity) * light.color_and_intensity.w;
+		float3 illumination = throughput * bsdf_value * radiance;
 
-	hit_point = ray_origin_epsilon_offset(hit_point, to_light, geometric_normal);
-	int shadow_ray_index = atomicAdd(&buffer_sizes.shadow[bounce], 1);
-	ray_buffer_shadow.traversal_data.ray_origin.set(shadow_ray_index, hit_point);
-	ray_buffer_shadow.traversal_data.ray_direction.set(shadow_ray_index, to_light);
-	ray_buffer_shadow.traversal_data.max_distance[shadow_ray_index] = INFINITY;
-	ray_buffer_shadow.illumination_and_pixel_index[shadow_ray_index] = make_float4(
-		illumination.x,
-		illumination.y,
-		illumination.z,
-		__int_as_float(pixel_index)
-	);
+		float3 shadow_ray_origin = ray_origin_epsilon_offset(hit_point, to_light, geometric_normal);
+		int shadow_ray_index = atomicAdd(&buffer_sizes.shadow[bounce], 1);
+		ray_buffer_shadow.traversal_data.ray_origin.set(shadow_ray_index, shadow_ray_origin);
+		ray_buffer_shadow.traversal_data.ray_direction.set(shadow_ray_index, to_light);
+		ray_buffer_shadow.traversal_data.max_distance[shadow_ray_index] = INFINITY;
+		ray_buffer_shadow.illumination_and_pixel_index[shadow_ray_index] = make_float4(
+			illumination.x,
+			illumination.y,
+			illumination.z,
+			__int_as_float(pixel_index)
+		);
+	}
 }
 
 template<typename BSDF, PackedMaterialBuffer * packed_material_buffer>
@@ -736,9 +763,17 @@ __device__ void shade_material(int bounce, int sample_index, int buffer_size) {
 		curvature = -curvature;
 	}
 
-	// Construct TBN frame
+	// Build TBN from geometric/UV derivatives. This makes glTF normal maps work
+	// even for primitives without a supplied TANGENT attribute.
 	float3 tangent, bitangent;
-	orthonormal_basis(normal, tangent, bitangent);
+	float uv_determinant = hit_triangle.tex_coord_edge_1.x * hit_triangle.tex_coord_edge_2.y - hit_triangle.tex_coord_edge_1.y * hit_triangle.tex_coord_edge_2.x;
+	if (fabsf(uv_determinant) > 1e-8f) {
+		tangent = (hit_triangle.position_edge_1 * hit_triangle.tex_coord_edge_2.y - hit_triangle.position_edge_2 * hit_triangle.tex_coord_edge_1.y) / uv_determinant;
+		tangent = normalize(tangent - normal * dot(normal, tangent));
+		bitangent = normalize(cross(normal, tangent)) * (uv_determinant < 0.0f ? -1.0f : 1.0f);
+	} else {
+		orthonormal_basis(normal, tangent, bitangent);
+	}
 
 	float3 omega_i = world_to_local(-ray_direction, tangent, bitangent, normal);
 
@@ -789,6 +824,9 @@ __device__ void shade_material(int bounce, int sample_index, int buffer_size) {
 		}
 
 		bsdf.calc_albedo(bounce, pixel_index, throughput, tex_coord, lod);
+		omega_i = world_to_local(-ray_direction, bsdf.tangent, bsdf.bitangent, bsdf.normal);
+		if (omega_i.z <= 0.0f) return;
+		bsdf.omega_i = omega_i;
 	} else if (bounce == 0) {
 		aov_framebuffer_set(AOVType::ALBEDO, pixel_index, make_float4(1.0f));
 	}

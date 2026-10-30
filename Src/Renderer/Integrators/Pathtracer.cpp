@@ -182,6 +182,7 @@ void Pathtracer::upload_punctual_lights() {
 		const PunctualLight & light = scene.punctual_lights[i];
 		cuda_lights[i].position_and_range = Vector4(light.position.x, light.position.y, light.position.z, light.range);
 		cuda_lights[i].color_and_intensity = Vector4(light.color.x, light.color.y, light.color.z, light.intensity);
+		cuda_lights[i].sg_pika_parameters = Vector4(light.use_sg_pika_attenuation ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
 	}
 
 	ptr_punctual_lights = CUDAMemory::malloc(cuda_lights);
@@ -621,6 +622,9 @@ void Pathtracer::update(float delta, Allocator * frame_allocator) {
 		Array<Material::Type> cuda_material_types(materials.size(), frame_allocator);
 		Array<CUDAMaterial>   cuda_materials     (materials.size(), frame_allocator);
 		Array<int>             cuda_material_emissive_texture_ids(materials.size(), frame_allocator);
+	Array<int>             cuda_material_emissive_texture_is_srgb(materials.size(), frame_allocator);
+		Array<int>             cuda_material_normal_texture_ids(materials.size(), frame_allocator);
+		Array<int>             cuda_material_occlusion_texture_ids(materials.size(), frame_allocator);
 		Array<Vector4>         cuda_material_emissions(materials.size(), frame_allocator);
 
 		for (int i = 0; i < materials.size(); i++) {
@@ -628,6 +632,9 @@ void Pathtracer::update(float delta, Allocator * frame_allocator) {
 
 			cuda_material_types[i] = material.type;
 			cuda_material_emissive_texture_ids[i] = material.emissive_texture_handle.handle;
+		cuda_material_emissive_texture_is_srgb[i] = material.emissive_texture_is_srgb;
+			cuda_material_normal_texture_ids[i] = material.normal_texture_handle.handle;
+			cuda_material_occlusion_texture_ids[i] = material.occlusion_texture_handle.handle;
 			cuda_material_emissions[i] = Vector4(material.emission.x, material.emission.y, material.emission.z, 0.0f);
 
 			switch (material.type) {
@@ -655,6 +662,8 @@ void Pathtracer::update(float delta, Allocator * frame_allocator) {
 					cuda_materials[i].pbr_metallic_roughness.alpha_masked = material.alpha_masked;
 					cuda_materials[i].pbr_metallic_roughness.alpha = material.alpha;
 					cuda_materials[i].pbr_metallic_roughness.alpha_cutoff = material.alpha_cutoff;
+					cuda_materials[i].pbr_metallic_roughness.base_color_texture_is_srgb = material.base_color_texture_is_srgb;
+					cuda_materials[i].pbr_metallic_roughness.occlusion_strength = material.occlusion_strength;
 					break;
 				}
 				case Material::Type::DIELECTRIC: {
@@ -676,6 +685,9 @@ void Pathtracer::update(float delta, Allocator * frame_allocator) {
 		CUDAMemory::memcpy_async(ptr_material_types, cuda_material_types.data(), materials.size(), memory_stream);
 		CUDAMemory::memcpy_async(ptr_materials,      cuda_materials     .data(), materials.size(), memory_stream);
 		CUDAMemory::memcpy_async(ptr_material_emissive_texture_ids, cuda_material_emissive_texture_ids.data(), materials.size(), memory_stream);
+	CUDAMemory::memcpy_async(ptr_material_emissive_texture_is_srgb, cuda_material_emissive_texture_is_srgb.data(), materials.size(), memory_stream);
+		CUDAMemory::memcpy_async(ptr_material_normal_texture_ids, cuda_material_normal_texture_ids.data(), materials.size(), memory_stream);
+		CUDAMemory::memcpy_async(ptr_material_occlusion_texture_ids, cuda_material_occlusion_texture_ids.data(), materials.size(), memory_stream);
 		CUDAMemory::memcpy_async(ptr_material_emissions, cuda_material_emissions.data(), materials.size(), memory_stream);
 
 		bool had_diffuse    = scene.has_diffuse;
@@ -745,7 +757,8 @@ void Pathtracer::update(float delta, Allocator * frame_allocator) {
 		bool lights_changed = had_lights ^ scene.has_lights;
 		if (lights_changed) {
 			if (scene.has_lights) {
-				// One area, point and directional NEE ray can be emitted per path.
+				// Keep three BATCH_SIZE-sized shadow-ray regions. The actual path
+				// batch is reduced below when all analytic lights are evaluated.
 				ray_buffer_shadow.init(BATCH_SIZE * 3);
 
 				invalidated_scene = true;
@@ -930,7 +943,16 @@ void Pathtracer::render() {
 	}
 
 	int pixels_left = pixel_count;
-	int batch_size  = Math::min(BATCH_SIZE, pixel_count);
+
+	// Area lights remain importance-sampled once per path. Punctual and
+	// directional analytic lights are evaluated exhaustively, so reduce the
+	// number of concurrently shaded paths rather than overrun the fixed shadow
+	// ray buffer. Its capacity remains BATCH_SIZE * 3.
+	const int max_shadow_rays_per_path = scene.has_lights && gpu_config.enable_next_event_estimation
+		? 1 + int(scene.punctual_lights.size()) + int(scene.directional_lights.size())
+		: 1;
+	const int shadow_limited_batch_size = Math::max(1, (BATCH_SIZE * 3) / max_shadow_rays_per_path);
+	int batch_size = Math::min(Math::min(BATCH_SIZE, pixel_count), shadow_limited_batch_size);
 
 	// Render in batches of BATCH_SIZE pixels at a time
 	while (pixels_left > 0) {
