@@ -385,3 +385,5 @@ perf.txt
 *.csv
 *.done
 *.diff
+*.nsys-rep
+*.sqlite
