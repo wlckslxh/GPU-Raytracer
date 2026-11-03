@@ -324,7 +324,8 @@ struct Integrator {
 
 	bool aov_is_enabled(AOVType aov_type) const { return gpu_config.aov_mask & (1u << int(aov_type)); }
 
-	void aovs_clear_to_zero();
+	void aovs_clear_to_zero(CUstream stream);
+	void aovs_clear_to_zero() { aovs_clear_to_zero(memory_stream); }
 
 	bool aov_render_gui_checkbox(AOVType aov_type, const char * aov_name);
 

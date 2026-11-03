@@ -565,10 +565,10 @@ void Integrator::free_aovs() {
 	}
 }
 
-void Integrator::aovs_clear_to_zero() {
+void Integrator::aovs_clear_to_zero(CUstream stream) {
 	for (size_t i = 0; i < size_t(AOVType::COUNT); i++) {
 		if (aov_is_enabled(AOVType(i))) {
-			CUDAMemory::memset_async(aovs[i].framebuffer, 0, screen_pitch * screen_height, memory_stream);
+			CUDAMemory::memset_async(aovs[i].framebuffer, 0, screen_pitch * screen_height, stream);
 		}
 	}
 }

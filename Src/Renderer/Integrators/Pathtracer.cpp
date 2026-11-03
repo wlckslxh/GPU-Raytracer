@@ -45,7 +45,15 @@ void Pathtracer::write_experiment_fps_csv() const {
 		filename_stem += "sweep_";
 	}
 	filename_stem += "b" + std::to_string(cpu_config.counter_collection_bounces) +
-		"_r" + std::to_string(cpu_config.measurement_bounces) + ".csv";
+		"_r" + std::to_string(cpu_config.measurement_bounces);
+	// Preserve the existing 1-SPP experiment files. Multi-sample frames use a
+	// separate schema and filename so their timing rows cannot be mixed with
+	// the historical 1-SPP measurements.
+	const bool multi_sample_frame = cpu_config.rays_per_pixel_per_frame != 1;
+	if (multi_sample_frame) {
+		filename_stem += "_spp" + std::to_string(cpu_config.rays_per_pixel_per_frame);
+	}
+	filename_stem += ".csv";
 	const std::filesystem::path filename = directory / filename_stem;
 	const bool write_header = !std::filesystem::exists(filename) || std::filesystem::file_size(filename, error) == 0;
 
@@ -62,37 +70,50 @@ void Pathtracer::write_experiment_fps_csv() const {
 
 	if (guRDTC) {
 		if (write_header) {
-			std::fprintf(file,
-				"scene,source_bvh,gu_rdtc,gu_threshold,counter_bounces,measurement_bounces,counter_frames,warmup_frames,fps_frames,total_time_ms,fps\n");
+			std::fprintf(file, multi_sample_frame
+				? "scene,source_bvh,gu_rdtc,gu_threshold,counter_bounces,measurement_bounces,counter_frames,warmup_frames,fps_frames,rays_per_pixel,total_time_ms,fps\n"
+				: "scene,source_bvh,gu_rdtc,gu_threshold,counter_bounces,measurement_bounces,counter_frames,warmup_frames,fps_frames,total_time_ms,fps\n");
 		}
-		std::fprintf(file, "%s,%s,1,%llu,%d,%d,%llu,%llu,%llu,%.6f,%.6f\n",
-			scene_name,
-			source_bvh,
-			static_cast<unsigned long long>(guRDTCThreshold),
-			cpu_config.counter_collection_bounces,
-			cpu_config.measurement_bounces,
-			static_cast<unsigned long long>(cpu_config.counter_collection_frames),
-			static_cast<unsigned long long>(cpu_config.fps_warmup_frames),
-			static_cast<unsigned long long>(cpu_config.fps_measurement_frames),
-			total_frame_time_ms,
-			static_cast<double>(experiment_fps));
+		if (multi_sample_frame) {
+			std::fprintf(file, "%s,%s,1,%llu,%d,%d,%llu,%llu,%llu,%d,%.6f,%.6f\n",
+				scene_name, source_bvh, static_cast<unsigned long long>(guRDTCThreshold),
+				cpu_config.counter_collection_bounces, cpu_config.measurement_bounces,
+				static_cast<unsigned long long>(cpu_config.counter_collection_frames),
+				static_cast<unsigned long long>(cpu_config.fps_warmup_frames),
+				static_cast<unsigned long long>(cpu_config.fps_measurement_frames),
+				cpu_config.rays_per_pixel_per_frame, total_frame_time_ms, static_cast<double>(experiment_fps));
+		} else {
+			std::fprintf(file, "%s,%s,1,%llu,%d,%d,%llu,%llu,%llu,%.6f,%.6f\n",
+				scene_name, source_bvh, static_cast<unsigned long long>(guRDTCThreshold),
+				cpu_config.counter_collection_bounces, cpu_config.measurement_bounces,
+				static_cast<unsigned long long>(cpu_config.counter_collection_frames),
+				static_cast<unsigned long long>(cpu_config.fps_warmup_frames),
+				static_cast<unsigned long long>(cpu_config.fps_measurement_frames),
+				total_frame_time_ms, static_cast<double>(experiment_fps));
+		}
 	} else {
 		if (write_header) {
-			std::fprintf(file,
-				"scene,source_bvh,counter_collapse,wald_collapse,counter_bounces,measurement_bounces,counter_frames,warmup_frames,fps_frames,total_time_ms,fps\n");
+			std::fprintf(file, multi_sample_frame
+				? "scene,source_bvh,counter_collapse,wald_collapse,counter_bounces,measurement_bounces,counter_frames,warmup_frames,fps_frames,rays_per_pixel,total_time_ms,fps\n"
+				: "scene,source_bvh,counter_collapse,wald_collapse,counter_bounces,measurement_bounces,counter_frames,warmup_frames,fps_frames,total_time_ms,fps\n");
 		}
-		std::fprintf(file, "%s,%s,%d,%d,%d,%d,%llu,%llu,%llu,%.6f,%.6f\n",
-			scene_name,
-			source_bvh,
-			counterCollapse ? 1 : 0,
-			waldCollapse ? 1 : 0,
-			cpu_config.counter_collection_bounces,
-			cpu_config.measurement_bounces,
-			static_cast<unsigned long long>(cpu_config.counter_collection_frames),
-			static_cast<unsigned long long>(cpu_config.fps_warmup_frames),
-			static_cast<unsigned long long>(cpu_config.fps_measurement_frames),
-			total_frame_time_ms,
-			static_cast<double>(experiment_fps));
+		if (multi_sample_frame) {
+			std::fprintf(file, "%s,%s,%d,%d,%d,%d,%llu,%llu,%llu,%d,%.6f,%.6f\n",
+				scene_name, source_bvh, counterCollapse ? 1 : 0, waldCollapse ? 1 : 0,
+				cpu_config.counter_collection_bounces, cpu_config.measurement_bounces,
+				static_cast<unsigned long long>(cpu_config.counter_collection_frames),
+				static_cast<unsigned long long>(cpu_config.fps_warmup_frames),
+				static_cast<unsigned long long>(cpu_config.fps_measurement_frames),
+				cpu_config.rays_per_pixel_per_frame, total_frame_time_ms, static_cast<double>(experiment_fps));
+		} else {
+			std::fprintf(file, "%s,%s,%d,%d,%d,%d,%llu,%llu,%llu,%.6f,%.6f\n",
+				scene_name, source_bvh, counterCollapse ? 1 : 0, waldCollapse ? 1 : 0,
+				cpu_config.counter_collection_bounces, cpu_config.measurement_bounces,
+				static_cast<unsigned long long>(cpu_config.counter_collection_frames),
+				static_cast<unsigned long long>(cpu_config.fps_warmup_frames),
+				static_cast<unsigned long long>(cpu_config.fps_measurement_frames),
+				total_frame_time_ms, static_cast<double>(experiment_fps));
+		}
 	}
 	std::fclose(file);
 
@@ -942,8 +963,6 @@ void Pathtracer::render() {
 		return; // The asynchronous BVH8 upload becomes visible next frame.
 	}
 
-	int pixels_left = pixel_count;
-
 	// Area lights remain importance-sampled once per path. Punctual and
 	// directional analytic lights are evaluated exhaustively, so reduce the
 	// number of concurrently shaded paths rather than overrun the fixed shadow
@@ -954,58 +973,80 @@ void Pathtracer::render() {
 	const int shadow_limited_batch_size = Math::max(1, (BATCH_SIZE * 3) / max_shadow_rays_per_path);
 	int batch_size = Math::min(Math::min(BATCH_SIZE, pixel_count), shadow_limited_batch_size);
 
-	// Render in batches of BATCH_SIZE pixels at a time
-	while (pixels_left > 0) {
-		int pixel_offset = pixel_count - pixels_left;
-		int pixel_count  = Math::min(batch_size, pixels_left);
+	// SVGF's temporal reprojection consumes one framebuffer result per display
+	// frame. Standard path accumulation below supports multiple independent
+	// samples per pixel; preserve the established SVGF behavior.
+	const int rays_per_pixel = gpu_config.enable_svgf ? 1 : cpu_config.rays_per_pixel_per_frame;
+	// sample_index is one-based in the established accumulation path. Keep the
+	// per-path indices one-based too, while assigning a distinct index to every
+	// sub-sample rendered in this display frame.
+	const int first_path_sample_index = (sample_index - 1) * rays_per_pixel + 1;
 
-		event_pool.record(&event_desc_primary);
+	for (int local_sample = 0; local_sample < rays_per_pixel; local_sample++) {
+		// The previous sample may have ended in a partial batch. Restore the
+		// full batch capacity before generating the next per-pixel path sample.
+		if (local_sample > 0) {
+			pinned_buffer_sizes->reset(batch_size);
+			global_buffer_sizes.set_value(*pinned_buffer_sizes);
+		}
 
-		// Generate primary Rays from the current Camera orientation
-		kernel_generate.execute(sample_index, pixel_offset, pixel_count);
+		const int path_sample_index = first_path_sample_index + local_sample;
+		int pixels_left = pixel_count;
 
-		for (int bounce = 0; bounce < gpu_config.num_bounces; bounce++) {
-			// Extend all Rays that are still alive to their next Triangle intersection
-			event_pool.record(&event_desc_trace[bounce]);
-			kernel_trace->execute(bounce);
+		// Render one complete path sample for every pixel, in batches.
+		while (pixels_left > 0) {
+			int pixel_offset = pixel_count - pixels_left;
+			int pixel_count  = Math::min(batch_size, pixels_left);
 
-			event_pool.record(&event_desc_sort[bounce]);
-			kernel_sort.execute(bounce, sample_index);
+			event_pool.record(&event_desc_primary);
+			kernel_generate.execute(path_sample_index, pixel_offset, pixel_count);
 
-			// Process the various Material types in different Kernels
-			if (scene.has_diffuse) {
-				event_pool.record(&event_desc_material_diffuse[bounce]);
-				kernel_material_diffuse.execute(bounce, sample_index);
+			for (int bounce = 0; bounce < gpu_config.num_bounces; bounce++) {
+				event_pool.record(&event_desc_trace[bounce]);
+				kernel_trace->execute(bounce);
+
+				event_pool.record(&event_desc_sort[bounce]);
+				kernel_sort.execute(bounce, path_sample_index);
+
+				if (scene.has_diffuse) {
+					event_pool.record(&event_desc_material_diffuse[bounce]);
+					kernel_material_diffuse.execute(bounce, path_sample_index);
+				}
+				if (scene.has_plastic) {
+					event_pool.record(&event_desc_material_plastic[bounce]);
+					kernel_material_plastic.execute(bounce, path_sample_index);
+				}
+				if (scene.has_pbr_metallic_roughness) {
+					kernel_material_pbr_metallic_roughness.execute(bounce, path_sample_index);
+				}
+				if (scene.has_dielectric) {
+					event_pool.record(&event_desc_material_dielectric[bounce]);
+					kernel_material_dielectric.execute(bounce, path_sample_index);
+				}
+				if (scene.has_conductor) {
+					event_pool.record(&event_desc_material_conductor[bounce]);
+					kernel_material_conductor.execute(bounce, path_sample_index);
+				}
+
+				if (scene.has_lights && gpu_config.enable_next_event_estimation) {
+					event_pool.record(&event_desc_shadow_trace[bounce]);
+					kernel_trace_shadow->execute(bounce);
+				}
 			}
-			if (scene.has_plastic) {
-				event_pool.record(&event_desc_material_plastic[bounce]);
-				kernel_material_plastic.execute(bounce, sample_index);
-			}
-			if (scene.has_pbr_metallic_roughness) {
-				kernel_material_pbr_metallic_roughness.execute(bounce, sample_index);
-			}
-			if (scene.has_dielectric) {
-				event_pool.record(&event_desc_material_dielectric[bounce]);
-				kernel_material_dielectric.execute(bounce, sample_index);
-			}
-			if (scene.has_conductor) {
-				event_pool.record(&event_desc_material_conductor[bounce]);
-				kernel_material_conductor.execute(bounce, sample_index);
-			}
 
-			// Trace shadow Rays
-			if (scene.has_lights && gpu_config.enable_next_event_estimation) {
-				event_pool.record(&event_desc_shadow_trace[bounce]);
-				kernel_trace_shadow->execute(bounce);
+			pixels_left -= batch_size;
+
+			if (pixels_left > 0) {
+				pinned_buffer_sizes->reset(Math::min(batch_size, pixels_left));
+				global_buffer_sizes.set_value(*pinned_buffer_sizes);
 			}
 		}
 
-		pixels_left -= batch_size;
-
-		if (pixels_left > 0) {
-			// Set buffer sizes to appropriate pixel count for next Batch
-			pinned_buffer_sizes->reset(Math::min(batch_size, pixels_left));
-			global_buffer_sizes.set_value(*pinned_buffer_sizes);
+		if (!gpu_config.enable_svgf) {
+			event_pool.record(&event_desc_accumulate);
+			kernel_accumulate.execute(float(path_sample_index));
+			// Accumulation and this clear must stay ordered with the path kernels.
+			aovs_clear_to_zero(nullptr);
 		}
 	}
 
@@ -1072,9 +1113,6 @@ void Pathtracer::render() {
 			kernel_taa         .execute(sample_index);
 			kernel_taa_finalize.execute();
 		}
-	} else {
-		event_pool.record(&event_desc_accumulate);
-		kernel_accumulate.execute(float(sample_index));
 	}
 
 	event_pool.record(&event_desc_end);
@@ -1108,6 +1146,8 @@ void Pathtracer::render() {
 	pinned_buffer_sizes->reset(batch_size);
 	global_buffer_sizes.set_value(*pinned_buffer_sizes);
 
+	// Non-SVGF samples are cleared immediately after their independent
+	// accumulation. Keep this final clear for SVGF and as a harmless reset.
 	aovs_clear_to_zero();
 
 	// If a pixel query was previously pending, it has just been resolved in the current frame
@@ -1119,6 +1159,10 @@ void Pathtracer::render() {
 void Pathtracer::render_gui() {
 	if (ImGui::CollapsingHeader("Integrator", ImGuiTreeNodeFlags_DefaultOpen)) {
 		invalidated_gpu_config |= ImGui::SliderInt("Num Bounces", &gpu_config.num_bounces, 0, MAX_BOUNCES);
+		if (ImGui::InputInt("Rays / Pixel / Frame", &cpu_config.rays_per_pixel_per_frame)) {
+			cpu_config.rays_per_pixel_per_frame = Math::max(cpu_config.rays_per_pixel_per_frame, 1);
+			sample_index = 0;
+		}
 
 		invalidated_gpu_config |= ImGui::Checkbox("NEE", &gpu_config.enable_next_event_estimation);
 		invalidated_gpu_config |= ImGui::Checkbox("MIS", &gpu_config.enable_multiple_importance_sampling);

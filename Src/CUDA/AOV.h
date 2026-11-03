@@ -36,6 +36,8 @@ __device__ inline float4 aov_accumulate(AOVType aov_type, int pixel_index, float
 	AOV & aov = get_aov(aov_type);
 	if (aov.framebuffer) {
 		if (n > 0.0f) {
+			// The renderer uses one-based sample indices: n is the ordinal of
+			// the sample currently being accumulated.
 			aov.accumulator[pixel_index] += (aov.framebuffer[pixel_index] - aov.accumulator[pixel_index]) / n; // Online average
 		} else {
 			aov.accumulator[pixel_index] = aov.framebuffer[pixel_index];

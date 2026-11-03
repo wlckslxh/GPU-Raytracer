@@ -77,13 +77,16 @@ struct CPUConfig {
 	// guide a full path-tracing measurement.
 	int      counter_collection_bounces = 1;
 	int      measurement_bounces = 10;
+	// Number of complete camera paths dispatched per pixel in one rendered
+	// frame. Each path uses an independent sample index.
+	int      rays_per_pixel_per_frame = 1;
 	uint64_t counter_collection_frames = 200ull;
 	uint64_t fps_warmup_frames = 10ull;
 	uint64_t fps_measurement_frames = 200ull;
 
 	MipmapFilterType mipmap_filter = MipmapFilterType::BOX;
 
-	BVHType bvh_type = BVHType::BVH;
+	BVHType bvh_type = BVHType::BVH8;
 
 	float sah_cost_node = 4.0f;
 	float sah_cost_leaf = 1.0f;
