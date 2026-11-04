@@ -259,7 +259,7 @@ struct Integrator {
 			// A geometric collapse does not consume traversal counters. Do not run
 			// the BVH2 collection pass or allocate its counter buffers in that case.
 			counter_mode = cpu_config.enable_bvh_counter_collection && (counterCollapse || guRDTC);
-			if (counter_mode) {
+			if (counter_mode || cpu_config.enable_bounce_ray_count_dump) {
 				gpu_config.num_bounces = cpu_config.counter_collection_bounces;
 				experiment_state = ExperimentState::COLLECTING_COUNTERS;
 			} else {

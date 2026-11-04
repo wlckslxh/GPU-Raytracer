@@ -60,6 +60,10 @@ struct CPUConfig {
 	// When false, the renderer keeps and traces the BVH selected by bvh_type.
 	bool     enable_bvh2_to_bvh8_experiment = false;
 	bool     enable_bvh_counter_collection = true;
+	// Records the number of camera/path rays traced at every bounce while the
+	// source BVH2 is active. This is a measurement-only mode: it stops after
+	// collection and does not collapse to BVH8.
+	bool     enable_bounce_ray_count_dump = false;
 	bool     enable_experiment_fps_measurement = true;
 	bool     exit_after_experiment = false;
 	// Controls the BVH2 -> BVH8 experiment conversion performed after counter

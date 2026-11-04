@@ -117,6 +117,12 @@ struct BufferSizes {
 
 __device__ BufferSizes buffer_sizes;
 
+// Optional host-provided storage used only by the BVH2 bounce-distribution
+// measurement. Each trace-kernel launch contributes its complete input queue.
+// Shadow rays deliberately remain excluded: the BVH traversal counters being
+// analysed are collected from camera/path rays only.
+__device__ __constant__ unsigned long long * bounce_ray_counts;
+
 __device__ __constant__ Camera camera;
 
 __device__ PixelQuery pixel_query = { INVALID, INVALID, INVALID };
@@ -141,14 +147,26 @@ extern "C" __global__ void kernel_generate(int sample_index, int pixel_offset, i
 }
 
 extern "C" __global__ void kernel_trace_bvh2(int bounce) {
+	if (blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0 &&
+		threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0 && bounce_ray_counts) {
+		atomicAdd(&bounce_ray_counts[bounce], static_cast<unsigned long long>(buffer_sizes.trace[bounce]));
+	}
 	bvh2_trace(&get_ray_buffer_trace(bounce)->traversal_data, buffer_sizes.trace[bounce], &buffer_sizes.rays_retired[bounce]);
 }
 
 extern "C" __global__ void kernel_trace_bvh4(int bounce) {
+	if (blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0 &&
+		threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0 && bounce_ray_counts) {
+		atomicAdd(&bounce_ray_counts[bounce], static_cast<unsigned long long>(buffer_sizes.trace[bounce]));
+	}
 	bvh4_trace(&get_ray_buffer_trace(bounce)->traversal_data, buffer_sizes.trace[bounce], &buffer_sizes.rays_retired[bounce]);
 }
 
 extern "C" __global__ void kernel_trace_bvh8(int bounce) {
+	if (blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0 &&
+		threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0 && bounce_ray_counts) {
+		atomicAdd(&bounce_ray_counts[bounce], static_cast<unsigned long long>(buffer_sizes.trace[bounce]));
+	}
 	bvh8_trace(&get_ray_buffer_trace(bounce)->traversal_data, buffer_sizes.trace[bounce], &buffer_sizes.rays_retired[bounce]);
 }
 

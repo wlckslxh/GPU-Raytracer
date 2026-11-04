@@ -120,6 +120,63 @@ void Pathtracer::write_experiment_fps_csv() const {
 	IO::print("Wrote experiment FPS CSV: {}\n"_sv, filename.string().c_str());
 }
 
+void Pathtracer::write_bounce_ray_counts_csv() const {
+	uint64_t ray_counts[MAX_BOUNCES] = { };
+	CUDAMemory::memcpy(ray_counts, ptr_bounce_ray_counts, MAX_BOUNCES);
+
+	const char * source_bvh = "unknown";
+	switch (source_bvh_type) {
+		case BVHType::BVH:  source_bvh = "sah";  break;
+		case BVHType::SBVH: source_bvh = "sbvh"; break;
+		case BVHType::BVH4: source_bvh = "bvh4"; break;
+		case BVHType::BVH8: source_bvh = "bvh8"; break;
+	}
+
+	std::string scene_stem = "scene";
+	if (cpu_config.scene_filenames.size() > 0) {
+		const std::string candidate = std::filesystem::path(cpu_config.scene_filenames[0].data()).stem().string();
+		if (!candidate.empty()) scene_stem = candidate;
+	}
+
+	const std::filesystem::path directory = "statistics/bounce_rays";
+	std::error_code error;
+	std::filesystem::create_directories(directory, error);
+	if (error) {
+		std::fprintf(stderr, "WARNING: Could not create bounce-ray statistics directory: %s\n", error.message().c_str());
+		return;
+	}
+
+	const std::filesystem::path filename = directory /
+		(scene_stem + "_bvh2_" + source_bvh + "_b" + std::to_string(cpu_config.counter_collection_bounces) +
+			"_spp" + std::to_string(cpu_config.rays_per_pixel_per_frame) + ".csv");
+	FILE * file = nullptr;
+#ifdef _WIN32
+	fopen_s(&file, filename.string().c_str(), "wb");
+#else
+	file = fopen(filename.string().c_str(), "wb");
+#endif
+	if (!file) {
+		std::fprintf(stderr, "WARNING: Could not write bounce-ray statistics file: %s\n", filename.string().c_str());
+		return;
+	}
+
+	uint64_t total = 0;
+	for (int bounce = 0; bounce < gpu_config.num_bounces; bounce++) total += ray_counts[bounce];
+	const uint64_t primary = ray_counts[0];
+	std::fprintf(file, "scene,source_bvh,collection_bounces,counter_frames,rays_per_pixel,bounce,path_rays,relative_to_primary,relative_to_total\n");
+	for (int bounce = 0; bounce < gpu_config.num_bounces; bounce++) {
+		const double relative_to_primary = primary != 0 ? double(ray_counts[bounce]) / double(primary) : 0.0;
+		const double relative_to_total = total != 0 ? double(ray_counts[bounce]) / double(total) : 0.0;
+		std::fprintf(file, "%s,%s,%d,%llu,%d,%d,%llu,%.9f,%.9f\n",
+			scene_stem.c_str(), source_bvh, cpu_config.counter_collection_bounces,
+			static_cast<unsigned long long>(cpu_config.counter_collection_frames),
+			cpu_config.rays_per_pixel_per_frame, bounce,
+			static_cast<unsigned long long>(ray_counts[bounce]), relative_to_primary, relative_to_total);
+	}
+	std::fclose(file);
+	IO::print("Wrote bounce-ray-count CSV: {}\n"_sv, filename.string().c_str());
+}
+
 void Pathtracer::cuda_init(unsigned frame_buffer_handle, int screen_width, int screen_height) {
 	init_module();
 	init_globals();
@@ -129,6 +186,13 @@ void Pathtracer::cuda_init(unsigned frame_buffer_handle, int screen_width, int s
 
 	global_buffer_sizes = cuda_module.get_global("buffer_sizes");
 	global_buffer_sizes.set_value(*pinned_buffer_sizes);
+	if (cpu_config.enable_bounce_ray_count_dump) {
+		ptr_bounce_ray_counts = CUDAMemory::malloc<uint64_t>(MAX_BOUNCES);
+		CUDAMemory::memset_async(ptr_bounce_ray_counts, 0, MAX_BOUNCES, memory_stream);
+		cuda_module.get_global("bounce_ray_counts").set_value(ptr_bounce_ray_counts);
+	} else {
+		cuda_module.get_global("bounce_ray_counts").set_value(CUDAMemory::Ptr<uint64_t> { });
+	}
 
 	resize_init(frame_buffer_handle, screen_width, screen_height);
 
@@ -170,6 +234,7 @@ void Pathtracer::cuda_free() {
 	free_rng();
 
 	CUDAMemory::free_pinned(pinned_buffer_sizes);
+	if (ptr_bounce_ray_counts.ptr) CUDAMemory::free(ptr_bounce_ray_counts);
 
 	if (ptr_light_triangle_indices.ptr) CUDAMemory::free(ptr_light_triangle_indices);
 	if (ptr_light_triangle_cumulative_probability.ptr) CUDAMemory::free(ptr_light_triangle_cumulative_probability);
@@ -1053,6 +1118,14 @@ void Pathtracer::render() {
 	if (experiment_state == ExperimentState::COLLECTING_COUNTERS) {
 		if (bvh_counter_dumped + 1 >= cpu_config.counter_collection_frames) {
 			CUDACALL(cuStreamSynchronize(nullptr));
+			if (cpu_config.enable_bounce_ray_count_dump) {
+				write_bounce_ray_counts_csv();
+				experiment_state = ExperimentState::FINISHED;
+				experiment_finished = true;
+				pinned_buffer_sizes->reset(batch_size);
+				global_buffer_sizes.set_value(*pinned_buffer_sizes);
+				return;
+			}
 
 			bvh_counter_results.resize(bvh_counter_count);
 			triangle_counter_results.resize(triangle_counter_count);

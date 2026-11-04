@@ -211,6 +211,7 @@ struct Pathtracer final : Integrator {
 	LUTTexture lut_conductor_albedo;
 
 	BufferSizes * pinned_buffer_sizes = nullptr;
+	CUDAMemory::Ptr<uint64_t> ptr_bounce_ray_counts;
 
 	CUDAModule::Global global_svgf_data;
 
@@ -313,4 +314,5 @@ struct Pathtracer final : Integrator {
 	void upload_directional_lights();
 	void begin_bvh8_measurement();
 	void write_experiment_fps_csv() const;
+	void write_bounce_ray_counts_csv() const;
 };
