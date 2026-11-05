@@ -4,9 +4,9 @@
     <ClCompile Include="Src\Assets\OBJLoader.cpp">
       <Filter>Assets</Filter>
     </ClCompile>
-	<ClCompile Include="Src\Assets\GLTFLoader.cpp">
-	  <Filter>Assets</Filter>
-	</ClCompile>
+    <ClCompile Include="Src\Assets\GLTFLoader.cpp">
+      <Filter>Assets</Filter>
+    </ClCompile>
     <ClCompile Include="Src\BVH\Builders\SBVHBuilder.cpp">
       <Filter>BVH\Builders</Filter>
     </ClCompile>
@@ -163,9 +163,9 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-	<ClInclude Include="Src\Assets\GLTFLoader.h">
-	  <Filter>Assets</Filter>
-	</ClInclude>
+    <ClInclude Include="Src\Assets\GLTFLoader.h">
+      <Filter>Assets</Filter>
+    </ClInclude>
     <Filter Include="Math">
       <UniqueIdentifier>{8eb0591e-caaa-4325-b7bf-48400ec23114}</UniqueIdentifier>
     </Filter>
@@ -208,6 +208,8 @@
     <Filter Include="Core\Allocators">
       <UniqueIdentifier>{4b1e0e24-b96c-4dac-884c-8f76c2f50eaf}</UniqueIdentifier>
     </Filter>
+    <ClInclude Include="Src\Assets\json.hpp" />
+    <ClInclude Include="Src\Assets\tiny_gltf.h" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Src\Assets\OBJLoader.h">

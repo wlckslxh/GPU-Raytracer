@@ -73,7 +73,10 @@
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
-  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Label="UserMacros">
+    <!-- Keep the KTX SDK beside the project so the solution is portable. -->
+    <KtxRoot Condition="'$(KtxRoot)'==''">$(MSBuildProjectDirectory)\external\ktx</KtxRoot>
+  </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <LinkIncremental>true</LinkIncremental>
   </PropertyGroup>
@@ -118,7 +121,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>NOMINMAX;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>false</ConformanceMode>
-      <AdditionalIncludeDirectories>Src;.\include;$(CUDA_PATH)\include;$(USERPROFILE)\Documents\SG_PIKA\external\ktx\include</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>Src;.\include;$(CUDA_PATH)\include;$(KtxRoot)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <FloatingPointModel>Fast</FloatingPointModel>
@@ -127,11 +130,11 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>ktx.lib;cuda.lib;cudart_static.lib;nvrtc.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;glew32.lib;glew32s.lib;SDL2.lib;SDL2main.lib;SDL2test.lib;OpenGL32.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>.\lib;$(CUDA_PATH)\lib\x64;$(USERPROFILE)\Documents\SG_PIKA\external\ktx\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>.\lib;$(CUDA_PATH)\lib\x64;$(KtxRoot)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
       <Command>xcopy /E /Y ".\dll" "$(OutputPath)"
-xcopy /Y "$(USERPROFILE)\Documents\SG_PIKA\external\ktx\dll\ktx.dll" "$(OutputPath)"</Command>
+xcopy /Y "$(KtxRoot)\dll\ktx.dll" "$(OutputPath)"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -176,7 +179,7 @@ xcopy /Y "$(USERPROFILE)\Documents\SG_PIKA\external\ktx\dll\ktx.dll" "$(OutputPa
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>NOMINMAX;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>false</ConformanceMode>
-      <AdditionalIncludeDirectories>Src;.\include;$(CUDA_PATH)\include;$(USERPROFILE)\Documents\SG_PIKA\external\ktx\include</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>Src;.\include;$(CUDA_PATH)\include;$(KtxRoot)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <ExceptionHandling>false</ExceptionHandling>
@@ -191,11 +194,11 @@ xcopy /Y "$(USERPROFILE)\Documents\SG_PIKA\external\ktx\dll\ktx.dll" "$(OutputPa
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>ktx.lib;cuda.lib;cudart_static.lib;nvrtc.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;glew32.lib;glew32s.lib;SDL2.lib;SDL2main.lib;SDL2test.lib;OpenGL32.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>.\lib;$(CUDA_PATH)\lib\x64;$(USERPROFILE)\Documents\SG_PIKA\external\ktx\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>.\lib;$(CUDA_PATH)\lib\x64;$(KtxRoot)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
       <Command>xcopy /E /Y ".\dll" "$(OutputPath)"
-xcopy /Y "$(USERPROFILE)\Documents\SG_PIKA\external\ktx\dll\ktx.dll" "$(OutputPath)"</Command>
+xcopy /Y "$(KtxRoot)\dll\ktx.dll" "$(OutputPath)"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -348,6 +351,11 @@ xcopy /Y "$(USERPROFILE)\Documents\SG_PIKA\external\ktx\dll\ktx.dll" "$(OutputPa
   <ItemGroup>
     <Natvis Include="Debug.natvis" />
   </ItemGroup>
+  <Target Name="ValidateKtxSdk" BeforeTargets="PrepareForBuild" Condition="'$(Platform)'=='x64'">
+    <Error Condition="!Exists('$(KtxRoot)\include\ktx.h')" Text="KTX SDK header not found: $(KtxRoot)\include\ktx.h. Copy the KTX SDK to external\ktx or set the KtxRoot MSBuild property." />
+    <Error Condition="!Exists('$(KtxRoot)\lib\ktx.lib')" Text="KTX SDK library not found: $(KtxRoot)\lib\ktx.lib. Copy the x64 KTX SDK to external\ktx or set the KtxRoot MSBuild property." />
+    <Error Condition="!Exists('$(KtxRoot)\dll\ktx.dll')" Text="KTX SDK runtime not found: $(KtxRoot)\dll\ktx.dll. Copy the x64 KTX SDK to external\ktx or set the KtxRoot MSBuild property." />
+  </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
