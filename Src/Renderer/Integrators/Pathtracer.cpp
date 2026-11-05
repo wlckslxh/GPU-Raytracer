@@ -1,5 +1,9 @@
 #include "Pathtracer.h"
 
+#include <cstdint>
+#include <cstring>
+#include <unordered_set>
+
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -50,6 +54,11 @@ void Pathtracer::write_experiment_fps_csv() const {
 		? "_counter_rr_off" : "_counter_rr_on";
 	filename_stem += cpu_config.enable_closest_hit_path_counter
 		? "_counter_path_closest" : "_counter_path_visit";
+	if (cpu_config.enable_vertex_counter_rays) {
+		filename_stem += "_counter_vertex_rpv" + std::to_string(cpu_config.counter_rays_per_vertex);
+	} else {
+		filename_stem += "_counter_pixel";
+	}
 	// Preserve the existing 1-SPP experiment files. Multi-sample frames use a
 	// separate schema and filename so their timing rows cannot be mixed with
 	// the historical 1-SPP measurements.
@@ -150,9 +159,13 @@ void Pathtracer::write_bounce_ray_counts_csv() const {
 		return;
 	}
 
+	const std::string counter_source = cpu_config.enable_vertex_counter_rays ? "vertex" : "pixel";
+	const int rays_per_source = cpu_config.enable_vertex_counter_rays
+		? cpu_config.counter_rays_per_vertex
+		: cpu_config.rays_per_pixel_per_frame;
 	const std::filesystem::path filename = directory /
 		(scene_stem + "_bvh2_" + source_bvh + "_b" + std::to_string(cpu_config.counter_collection_bounces) +
-			"_spp" + std::to_string(cpu_config.rays_per_pixel_per_frame) + ".csv");
+			"_" + counter_source + "_rps" + std::to_string(rays_per_source) + ".csv");
 	FILE * file = nullptr;
 #ifdef _WIN32
 	fopen_s(&file, filename.string().c_str(), "wb");
@@ -167,23 +180,106 @@ void Pathtracer::write_bounce_ray_counts_csv() const {
 	uint64_t total = 0;
 	for (int bounce = 0; bounce < gpu_config.num_bounces; bounce++) total += ray_counts[bounce];
 	const uint64_t primary = ray_counts[0];
-	std::fprintf(file, "scene,source_bvh,collection_bounces,counter_frames,rays_per_pixel,bounce,path_rays,relative_to_primary,relative_to_total\n");
+	std::fprintf(file, "scene,source_bvh,collection_bounces,counter_frames,counter_source,rays_per_source,bounce,path_rays,relative_to_primary,relative_to_total\n");
 	for (int bounce = 0; bounce < gpu_config.num_bounces; bounce++) {
 		const double relative_to_primary = primary != 0 ? double(ray_counts[bounce]) / double(primary) : 0.0;
 		const double relative_to_total = total != 0 ? double(ray_counts[bounce]) / double(total) : 0.0;
-		std::fprintf(file, "%s,%s,%d,%llu,%d,%d,%llu,%.9f,%.9f\n",
+		std::fprintf(file, "%s,%s,%d,%llu,%s,%d,%d,%llu,%.9f,%.9f\n",
 			scene_stem.c_str(), source_bvh, cpu_config.counter_collection_bounces,
 			static_cast<unsigned long long>(cpu_config.counter_collection_frames),
-			cpu_config.rays_per_pixel_per_frame, bounce,
+			counter_source.c_str(), rays_per_source, bounce,
 			static_cast<unsigned long long>(ray_counts[bounce]), relative_to_primary, relative_to_total);
 	}
 	std::fclose(file);
 	IO::print("Wrote bounce-ray-count CSV: {}\n"_sv, filename.string().c_str());
 }
 
+void Pathtracer::init_vertex_counter_seeds() {
+	auto global_vertex_counter_seeds = cuda_module.get_global("vertex_counter_seeds");
+	global_vertex_counter_seeds.set_value(CUDAMemory::Ptr<VertexCounterSeed> { });
+	vertex_counter_seed_count = 0;
+
+	if (!cpu_config.enable_vertex_counter_rays) return;
+
+	struct VertexKey {
+		uint32_t bits[6];
+		bool operator==(const VertexKey & other) const {
+			return memcmp(bits, other.bits, sizeof(bits)) == 0;
+		}
+	};
+	struct VertexKeyHash {
+		size_t operator()(const VertexKey & key) const {
+			size_t hash = size_t(1469598103934665603ull);
+			for (uint32_t bits : key.bits) {
+				hash ^= size_t(bits);
+				hash *= size_t(1099511628211ull);
+			}
+			return hash;
+		}
+	};
+	struct LocalVertex {
+		Vector3 position;
+		Vector3 normal;
+	};
+
+	std::vector<std::vector<LocalVertex>> unique_vertices(scene.asset_manager.mesh_datas.size());
+	for (size_t mesh_data_index = 0; mesh_data_index < scene.asset_manager.mesh_datas.size(); ++mesh_data_index) {
+		const MeshData & mesh_data = scene.asset_manager.mesh_datas[mesh_data_index];
+		auto & vertices = unique_vertices[mesh_data_index];
+		std::unordered_set<VertexKey, VertexKeyHash> seen;
+		seen.reserve(mesh_data.triangles.size() * 3);
+		vertices.reserve(mesh_data.triangles.size() * 3);
+
+		for (const Triangle & triangle : mesh_data.triangles) {
+			const Vector3 positions[3] = { triangle.position_0, triangle.position_1, triangle.position_2 };
+			const Vector3 normals[3] = { triangle.normal_0, triangle.normal_1, triangle.normal_2 };
+			for (int corner = 0; corner < 3; ++corner) {
+				VertexKey key = { };
+				memcpy(&key.bits[0], &positions[corner].x, sizeof(float));
+				memcpy(&key.bits[1], &positions[corner].y, sizeof(float));
+				memcpy(&key.bits[2], &positions[corner].z, sizeof(float));
+				memcpy(&key.bits[3], &normals[corner].x, sizeof(float));
+				memcpy(&key.bits[4], &normals[corner].y, sizeof(float));
+				memcpy(&key.bits[5], &normals[corner].z, sizeof(float));
+				if (seen.insert(key).second) vertices.push_back({ positions[corner], normals[corner] });
+			}
+		}
+	}
+
+	std::vector<VertexCounterSeed> seeds;
+	for (const Mesh & mesh : scene.meshes) {
+		const auto & vertices = unique_vertices[size_t(mesh.mesh_data_handle.handle)];
+		seeds.reserve(seeds.size() + vertices.size());
+		for (const LocalVertex & vertex : vertices) {
+			Vector3 position = Matrix4::transform_position(mesh.transform, vertex.position);
+			Vector3 normal = Matrix4::transform_direction(mesh.transform, vertex.normal);
+			const float normal_length_squared = Vector3::length_squared(normal);
+			if (normal_length_squared <= 0.0f) continue;
+			normal /= sqrtf(normal_length_squared);
+			seeds.push_back({
+				{ position.x, position.y, position.z },
+				{ normal.x, normal.y, normal.z }
+			});
+		}
+	}
+
+	if (seeds.empty()) {
+		IO::print("WARNING: Vertex counter-ray mode found no usable scene vertices.\n"_sv);
+		return;
+	}
+
+	ptr_vertex_counter_seeds = CUDAMemory::malloc(seeds.data(), seeds.size());
+	vertex_counter_seed_count = seeds.size();
+	global_vertex_counter_seeds.set_value(ptr_vertex_counter_seeds);
+	IO::print("Vertex counter-ray seeds: {} unique position/normal pairs across scene instances ({} rays per seed).\n"_sv,
+		vertex_counter_seed_count, cpu_config.counter_rays_per_vertex);
+}
+
 void Pathtracer::cuda_init(unsigned frame_buffer_handle, int screen_width, int screen_height) {
 	init_module();
 	init_globals();
+	global_counter_only_mode = cuda_module.get_global("counter_only_mode");
+	global_counter_only_mode.set_value(false);
 
 	pinned_buffer_sizes = CUDAMemory::malloc_pinned<BufferSizes>();
 	pinned_buffer_sizes->reset(BATCH_SIZE);
@@ -202,6 +298,7 @@ void Pathtracer::cuda_init(unsigned frame_buffer_handle, int screen_width, int s
 
 	init_materials();
 	init_geometry();
+	init_vertex_counter_seeds();
 	init_sky();
 	init_rng();
 	init_events();
@@ -239,6 +336,7 @@ void Pathtracer::cuda_free() {
 
 	CUDAMemory::free_pinned(pinned_buffer_sizes);
 	if (ptr_bounce_ray_counts.ptr) CUDAMemory::free(ptr_bounce_ray_counts);
+	if (ptr_vertex_counter_seeds.ptr) CUDAMemory::free(ptr_vertex_counter_seeds);
 
 	if (ptr_light_triangle_indices.ptr) CUDAMemory::free(ptr_light_triangle_indices);
 	if (ptr_light_triangle_cumulative_probability.ptr) CUDAMemory::free(ptr_light_triangle_cumulative_probability);
@@ -309,6 +407,7 @@ void Pathtracer::init_module() {
 	kernel_average_dielectric  .init(&cuda_module, "kernel_average_dielectric");
 	kernel_average_conductor   .init(&cuda_module, "kernel_average_conductor");
 	kernel_generate            .init(&cuda_module, "kernel_generate");
+	kernel_generate_vertex_counter.init(&cuda_module, "kernel_generate_vertex_counter");
 	kernel_trace_bvh2          .init(&cuda_module, "kernel_trace_bvh2");
 	kernel_trace_bvh4          .init(&cuda_module, "kernel_trace_bvh4");
 	kernel_trace_bvh8          .init(&cuda_module, "kernel_trace_bvh8");
@@ -343,6 +442,7 @@ void Pathtracer::init_module() {
 	kernel_average_dielectric  .set_block_dim(256, 1, 1);
 	kernel_average_conductor   .set_block_dim(256, 1, 1);
 	kernel_generate            .set_block_dim(256, 1, 1);
+	kernel_generate_vertex_counter.set_block_dim(256, 1, 1);
 	kernel_sort                .set_block_dim(256, 1, 1);
 	kernel_material_diffuse    .set_block_dim(256, 1, 1);
 	kernel_material_plastic    .set_block_dim(256, 1, 1);
@@ -512,6 +612,7 @@ void Pathtracer::resize_init(unsigned frame_buffer_handle, int width, int height
 	kernel_accumulate    .set_grid_dim(screen_pitch / kernel_accumulate    .block_dim_x, Math::divide_round_up(height, kernel_accumulate    .block_dim_y), 1);
 
 	kernel_generate           .set_grid_dim(Math::divide_round_up(BATCH_SIZE, kernel_generate           .block_dim_x), 1, 1);
+	kernel_generate_vertex_counter.set_grid_dim(Math::divide_round_up(BATCH_SIZE, kernel_generate_vertex_counter.block_dim_x), 1, 1);
 	kernel_sort               .set_grid_dim(Math::divide_round_up(BATCH_SIZE, kernel_sort               .block_dim_x), 1, 1);
 	kernel_material_diffuse   .set_grid_dim(Math::divide_round_up(BATCH_SIZE, kernel_material_diffuse   .block_dim_x), 1, 1);
 	kernel_material_plastic   .set_grid_dim(Math::divide_round_up(BATCH_SIZE, kernel_material_plastic   .block_dim_x), 1, 1);
@@ -1027,6 +1128,36 @@ void Pathtracer::begin_bvh8_measurement() {
 	}
 }
 
+void Pathtracer::render_vertex_counter_paths(int path_sample_index, int batch_size) {
+	const size_t total_rays = vertex_counter_seed_count * size_t(cpu_config.counter_rays_per_vertex);
+	global_counter_only_mode.set_value(true);
+
+	for (size_t ray_offset = 0; ray_offset < total_rays; ray_offset += size_t(batch_size)) {
+		const int ray_count = int(Math::min(size_t(batch_size), total_rays - ray_offset));
+		pinned_buffer_sizes->reset(ray_count);
+		global_buffer_sizes.set_value(*pinned_buffer_sizes);
+
+		kernel_generate_vertex_counter.execute(
+			path_sample_index,
+			int(ray_offset),
+			ray_count,
+			cpu_config.counter_rays_per_vertex);
+
+		for (int bounce = 0; bounce < gpu_config.num_bounces; ++bounce) {
+			kernel_trace->execute(bounce);
+			kernel_sort.execute(bounce, path_sample_index);
+
+			if (scene.has_diffuse) kernel_material_diffuse.execute(bounce, path_sample_index);
+			if (scene.has_plastic) kernel_material_plastic.execute(bounce, path_sample_index);
+			if (scene.has_pbr_metallic_roughness) kernel_material_pbr_metallic_roughness.execute(bounce, path_sample_index);
+			if (scene.has_dielectric) kernel_material_dielectric.execute(bounce, path_sample_index);
+			if (scene.has_conductor) kernel_material_conductor.execute(bounce, path_sample_index);
+		}
+	}
+
+	global_counter_only_mode.set_value(false);
+}
+
 void Pathtracer::render() {
 	event_pool.reset();
 
@@ -1045,6 +1176,38 @@ void Pathtracer::render() {
 		: 1;
 	const int shadow_limited_batch_size = Math::max(1, (BATCH_SIZE * 3) / max_shadow_rays_per_path);
 	int batch_size = Math::min(Math::min(BATCH_SIZE, pixel_count), shadow_limited_batch_size);
+
+	const bool vertex_counter_pass =
+		experiment_state == ExperimentState::COLLECTING_COUNTERS &&
+		cpu_config.enable_vertex_counter_rays &&
+		vertex_counter_seed_count > 0;
+	if (vertex_counter_pass) {
+		batch_size = Math::min(BATCH_SIZE, int(vertex_counter_seed_count * size_t(cpu_config.counter_rays_per_vertex)));
+		render_vertex_counter_paths(sample_index, batch_size);
+
+		if (bvh_counter_dumped + 1 >= cpu_config.counter_collection_frames) {
+			CUDACALL(cuStreamSynchronize(nullptr));
+			if (cpu_config.enable_bounce_ray_count_dump) {
+				write_bounce_ray_counts_csv();
+				experiment_state = ExperimentState::FINISHED;
+				experiment_finished = true;
+			} else {
+				bvh_counter_results.resize(bvh_counter_count);
+				triangle_counter_results.resize(triangle_counter_count);
+				mesh_counter_results.resize(mesh_counter_count);
+				CUDAMemory::memcpy<uint64_t>(bvh_counter_results.data(), ptr_bvh_counter, bvh_counter_count);
+				CUDAMemory::memcpy<uint64_t>(triangle_counter_results.data(), ptr_triangle_counter, triangle_counter_count);
+				CUDAMemory::memcpy<uint64_t>(mesh_counter_results.data(), ptr_mesh_counter, mesh_counter_count);
+				begin_bvh8_measurement();
+			}
+		} else {
+			++bvh_counter_dumped;
+		}
+
+		pinned_buffer_sizes->reset(Math::min(BATCH_SIZE, pixel_count));
+		global_buffer_sizes.set_value(*pinned_buffer_sizes);
+		return;
+	}
 
 	// SVGF's temporal reprojection consumes one framebuffer result per display
 	// frame. Standard path accumulation below supports multiple independent

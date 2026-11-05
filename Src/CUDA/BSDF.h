@@ -1,4 +1,6 @@
 #pragma once
+
+extern __device__ __constant__ bool counter_only_mode;
 #include "KullaConty.h"
 #include "Sampling.h"
 #include "Material.h"
@@ -28,10 +30,10 @@ struct BSDFDiffuse {
 	__device__ void calc_albedo(int bounce, int pixel_index, float3 & throughput, float2 tex_coord, const TextureLOD & lod) {
 		albedo = sample_albedo(bounce, material.diffuse, material.texture_id, tex_coord, lod);
 
-		if (bounce == 0) {
+		if (bounce == 0 && !counter_only_mode) {
 			aov_framebuffer_set(AOVType::ALBEDO, pixel_index, make_float4(albedo));
 		}
-		if (!(config.enable_svgf && bounce == 0)) {
+		if (!(config.enable_svgf && bounce == 0 && !counter_only_mode)) {
 			throughput *= albedo;
 		}
 	}
@@ -92,7 +94,7 @@ struct BSDFPlastic {
 	__device__ void calc_albedo(int bounce, int pixel_index, float3 & ray_throughput, float2 tex_coord, const TextureLOD & lod) {
 		albedo = sample_albedo(bounce, material.diffuse, material.texture_id, tex_coord, lod);
 
-		if (bounce == 0) {
+		if (bounce == 0 && !counter_only_mode) {
 			aov_framebuffer_set(AOVType::ALBEDO, pixel_index, make_float4(albedo));
 		}
 	}
@@ -263,7 +265,7 @@ struct BSDFPBRMetallicRoughness {
 			bitangent = normalize(cross(normal, tangent));
 		}
 
-		if (bounce == 0) {
+		if (bounce == 0 && !counter_only_mode) {
 			aov_framebuffer_set(AOVType::ALBEDO, pixel_index, make_float4(base_color));
 		}
 	}

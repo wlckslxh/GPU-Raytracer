@@ -84,6 +84,11 @@ struct CPUConfig {
 	// unless they miss or are absorbed by the scene.  The user's normal Russian
 	// roulette setting is restored before the post-conversion FPS pass.
 	bool     disable_russian_roulette_during_counter_collection = false;
+	// Replace camera rays with counter-only paths emitted from unique scene
+	// vertices into the cosine-weighted hemisphere around each vertex normal.
+	// These paths reuse traversal and BSDF sampling but never write render AOVs.
+	bool     enable_vertex_counter_rays = false;
+	int      counter_rays_per_vertex = 1;
 	// Attribute counter samples only to final closest-hit paths for regular
 	// rays and first blocking paths for shadow rays.
 	bool     enable_closest_hit_path_counter = false;

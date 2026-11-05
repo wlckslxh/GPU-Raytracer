@@ -123,6 +123,17 @@ __device__ BufferSizes buffer_sizes;
 // analysed are collected from camera/path rays only.
 __device__ __constant__ unsigned long long * bounce_ray_counts;
 
+// Counter-only paths use the regular traversal, sorting and BSDF machinery,
+// but carry a synthetic path id instead of a framebuffer pixel index.
+__device__ __constant__ bool counter_only_mode;
+
+struct VertexCounterSeed {
+	float3 position;
+	float3 normal;
+};
+
+__device__ __constant__ const VertexCounterSeed * vertex_counter_seeds;
+
 __device__ __constant__ Camera camera;
 
 __device__ PixelQuery pixel_query = { INVALID, INVALID, INVALID };
@@ -144,6 +155,36 @@ extern "C" __global__ void kernel_generate(int sample_index, int pixel_offset, i
 	ray_buffer_trace->traversal_data.ray_origin   .set(index, ray.origin);
 	ray_buffer_trace->traversal_data.ray_direction.set(index, ray.direction);
 	ray_buffer_trace->pixel_index_and_flags[index] = pixel_index;
+}
+
+extern "C" __global__ void kernel_generate_vertex_counter(
+	int sample_index,
+	int ray_offset,
+	int ray_count,
+	int rays_per_vertex
+) {
+	int index = blockIdx.x * blockDim.x + threadIdx.x;
+	if (index >= ray_count) return;
+
+	unsigned path_index = unsigned(index + ray_offset);
+	unsigned vertex_index = path_index / unsigned(rays_per_vertex);
+	VertexCounterSeed seed = vertex_counter_seeds[vertex_index];
+
+	// Keep the launch direction independent from BSDF_0, which is consumed if
+	// this path reaches a surface at bounce zero.
+	float2 random_direction = random<SampleDimension::FILTER>(path_index, 0, sample_index);
+	float3 direction_local = sample_cosine_weighted_direction(random_direction.x, random_direction.y);
+	float3 tangent;
+	float3 bitangent;
+	orthonormal_basis(seed.normal, tangent, bitangent);
+	float3 direction = normalize(local_to_world(direction_local, tangent, bitangent, seed.normal));
+
+	TraceBuffer * ray_buffer_trace = get_ray_buffer_trace(0);
+	ray_buffer_trace->traversal_data.ray_origin.set(
+		index, ray_origin_epsilon_offset(seed.position, direction, seed.normal));
+	ray_buffer_trace->traversal_data.ray_direction.set(index, direction);
+	// The top two bits are reserved for path flags in subsequent bounces.
+	ray_buffer_trace->pixel_index_and_flags[index] = path_index & ~FLAGS_ALL;
 }
 
 extern "C" __global__ void kernel_trace_bvh2(int bounce) {
@@ -222,7 +263,7 @@ __device__ bool russian_roulette(int pixel_index, int bounce, int sample_index, 
 	}
 	if (config.enable_russian_roulette && bounce > 0) {
 		float3 throughput_with_albedo = throughput;
-		if (config.enable_svgf) {
+		if (config.enable_svgf && !counter_only_mode) {
 			throughput_with_albedo *= make_float3(aov_framebuffer_get(AOVType::ALBEDO, pixel_index));
 		}
 
@@ -346,6 +387,7 @@ extern "C" __global__ void kernel_sort(int bounce, int sample_index) {
 
 	// If we didn't hit anything, sample the Sky
 	if (hit.triangle_id == INVALID) {
+		if (counter_only_mode) return;
 		float3 illumination = throughput * sample_sky(ray_direction);
 
 		if (bounce == 0) {
@@ -362,7 +404,7 @@ extern "C" __global__ void kernel_sort(int bounce, int sample_index) {
 		return;
 	}
 
-	if (bounce == 0 && pixel_query.pixel_index == pixel_index) {
+	if (!counter_only_mode && bounce == 0 && pixel_query.pixel_index == pixel_index) {
 		pixel_query.mesh_id     = hit.mesh_id;
 		pixel_query.triangle_id = hit.triangle_id;
 	}
@@ -372,6 +414,7 @@ extern "C" __global__ void kernel_sort(int bounce, int sample_index) {
 	MaterialType material_type = material_get_type(material_id);
 
 	if (material_type == MaterialType::LIGHT) {
+		if (counter_only_mode) return;
 		// Obtain the Light's position and normal
 		TrianglePos light_triangle = triangle_get_positions(hit.triangle_id);
 
@@ -800,7 +843,7 @@ __device__ void shade_material(int bounce, int sample_index, int buffer_size) {
 	// Initialize BSDF
 	int material_id = triangle_get_material_id(hit.mesh_id, hit.triangle_id);
 	float3 emissive = material_get_emission(material_id, tex_coord.x, tex_coord.y);
-	if (vmax_max(emissive.x, emissive.y, emissive.z) > 0.0f) {
+	if (!counter_only_mode && vmax_max(emissive.x, emissive.y, emissive.z) > 0.0f) {
 		float3 illumination = throughput * emissive;
 		aov_framebuffer_add(AOVType::RADIANCE, pixel_index, make_float4(illumination));
 		if (bounce == 0) {
@@ -845,7 +888,7 @@ __device__ void shade_material(int bounce, int sample_index, int buffer_size) {
 		omega_i = world_to_local(-ray_direction, bsdf.tangent, bsdf.bitangent, bsdf.normal);
 		if (omega_i.z <= 0.0f) return;
 		bsdf.omega_i = omega_i;
-	} else if (bounce == 0) {
+	} else if (bounce == 0 && !counter_only_mode) {
 		aov_framebuffer_set(AOVType::ALBEDO, pixel_index, make_float4(1.0f));
 	}
 
@@ -874,7 +917,7 @@ __device__ void shade_material(int bounce, int sample_index, int buffer_size) {
 		return;
 	}
 
-	if (bounce == 0) {
+	if (bounce == 0 && !counter_only_mode) {
 		aov_framebuffer_set(AOVType::NORMAL,   pixel_index, make_float4(normal));
 		aov_framebuffer_set(AOVType::POSITION, pixel_index, make_float4(hit_point));
 	}
@@ -885,7 +928,7 @@ __device__ void shade_material(int bounce, int sample_index, int buffer_size) {
 	}
 
 	// Emit GBuffers if SVGF is enabled
-	if (bounce == 0 && config.enable_svgf) {
+	if (!counter_only_mode && bounce == 0 && config.enable_svgf) {
 		float3 hit_point_prev = hit_point_local;
 
 		Matrix3x4 world_prev = mesh_get_transform_prev(hit.mesh_id);
@@ -897,7 +940,7 @@ __device__ void shade_material(int bounce, int sample_index, int buffer_size) {
 	}
 
 	// Next Event Estimation
-	if (config.enable_next_event_estimation && bsdf.allow_nee()) {
+	if (!counter_only_mode && config.enable_next_event_estimation && bsdf.allow_nee()) {
 		if (lights_total_weight > 0.0f) {
 			next_event_estimation(pixel_index, bounce, sample_index, bsdf, medium_id, hit_point, normal, geometric_normal, throughput);
 		}

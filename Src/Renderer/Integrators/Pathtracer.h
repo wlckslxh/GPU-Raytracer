@@ -154,6 +154,7 @@ struct Pathtracer final : Integrator {
 	CUDAKernel kernel_average_conductor;
 
 	CUDAKernel kernel_generate;
+	CUDAKernel kernel_generate_vertex_counter;
 	CUDAKernel kernel_trace_bvh2;
 	CUDAKernel kernel_trace_bvh4;
 	CUDAKernel kernel_trace_bvh8;
@@ -212,6 +213,14 @@ struct Pathtracer final : Integrator {
 
 	BufferSizes * pinned_buffer_sizes = nullptr;
 	CUDAMemory::Ptr<uint64_t> ptr_bounce_ray_counts;
+
+	struct VertexCounterSeed {
+		float3 position;
+		float3 normal;
+	};
+	CUDAMemory::Ptr<VertexCounterSeed> ptr_vertex_counter_seeds;
+	size_t vertex_counter_seed_count = 0;
+	CUDAModule::Global global_counter_only_mode;
 
 	CUDAModule::Global global_svgf_data;
 
@@ -296,6 +305,8 @@ struct Pathtracer final : Integrator {
 
 	void init_luts();
 	void free_luts();
+	void init_vertex_counter_seeds();
+	void render_vertex_counter_paths(int sample_index, int batch_size);
 
 	void resize_init(unsigned frame_buffer_handle, int width, int height) override; // Part of resize that initializes new size
 	void resize_free()                                                    override; // Part of resize that cleans up old size
