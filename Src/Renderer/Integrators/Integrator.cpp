@@ -720,8 +720,13 @@ void Integrator::update(float delta, Allocator * frame_allocator) {
 		case ExperimentState::PREPARING_BVH8:
 			break;
 		case ExperimentState::COLLECTING_COUNTERS:
-			invalidated_camera |= scene.set_camera_keyframe_sample(
-				bvh_counter_dumped, cpu_config.counter_collection_frames);
+			// Camera counter rays follow the configured keyframe path. Vertex
+			// counter rays do not consume the camera, and updating it here would
+			// reset the renderer sample index every counter frame.
+			if (!cpu_config.enable_vertex_counter_rays) {
+				invalidated_camera |= scene.set_camera_keyframe_sample(
+					bvh_counter_dumped, cpu_config.counter_collection_frames);
+			}
 			break;
 		case ExperimentState::WARMING_UP_FPS:
 			// Warm up with a fixed camera, then restart the measured path at 0.

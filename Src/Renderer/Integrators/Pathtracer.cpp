@@ -1183,7 +1183,11 @@ void Pathtracer::render() {
 		vertex_counter_seed_count > 0;
 	if (vertex_counter_pass) {
 		batch_size = Math::min(BATCH_SIZE, int(vertex_counter_seed_count * size_t(cpu_config.counter_rays_per_vertex)));
-		render_vertex_counter_paths(sample_index, batch_size);
+		// Couple vertex-counter sampling directly to the completed counter-frame
+		// count. The normal renderer sample index can be reset by camera or GPU
+		// state changes and must not cause repeated vertex directions.
+		const int counter_frame_sample_index = static_cast<int>(bvh_counter_dumped);
+		render_vertex_counter_paths(counter_frame_sample_index, batch_size);
 
 		if (bvh_counter_dumped + 1 >= cpu_config.counter_collection_frames) {
 			CUDACALL(cuStreamSynchronize(nullptr));
