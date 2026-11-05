@@ -15,7 +15,7 @@ void BVH8Converter::convert() {
 
 	// Fill cost table using dynamic programming (bottom up)
 	if (counterCollapse) {
-		rootCounterSA = bvh2.nodes[0].aabb.surface_area() / (float)counter[0];
+		rootCounterSA = bvh2.nodes[0].aabb.surface_area() / (counter[0] != 0 ? (float)counter[0] : 1);
 	}
 	calculate_cost(0, bvh2.nodes);
 

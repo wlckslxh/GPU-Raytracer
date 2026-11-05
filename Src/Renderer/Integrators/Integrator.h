@@ -179,11 +179,13 @@ struct Integrator {
 	CUDAMemory::Ptr<uint64_t>  ptr_bvh_counter;
 	CUDAMemory::Ptr<uint64_t> ptr_triangle_counter;
 	CUDAMemory::Ptr<uint64_t> ptr_mesh_counter;
+	CUDAMemory::Ptr<int>      ptr_bvh2_parent_indices;
 	size_t bvh_counter_count = 0;
 	size_t triangle_counter_count = 0;
 	size_t mesh_counter_count = 0;
 	uint64_t bvh_counter_dumped = 0;
 	CUDAMemory::Ptr<bool> ptr_counter_mode;
+	CUDAMemory::Ptr<bool> ptr_closest_hit_path_counter_mode;
 	Array<uint64_t> bvh_counter_results;
 	Array<uint64_t> triangle_counter_results;
 	Array<uint64_t> mesh_counter_results;
@@ -246,6 +248,8 @@ struct Integrator {
 	bool counterCollapse = true;
 	bool waldCollapse = false;
 	bool guRDTC = false;
+	bool russian_roulette_disabled_for_counter_collection = false;
+	bool russian_roulette_before_counter_collection = true;
 	uint64_t guRDTCThreshold = 32ull;
 	BVHType source_bvh_type = BVHType::BVH;
 
@@ -261,6 +265,11 @@ struct Integrator {
 			counter_mode = cpu_config.enable_bvh_counter_collection && (counterCollapse || guRDTC);
 			if (counter_mode || cpu_config.enable_bounce_ray_count_dump) {
 				gpu_config.num_bounces = cpu_config.counter_collection_bounces;
+				if (cpu_config.disable_russian_roulette_during_counter_collection) {
+					russian_roulette_before_counter_collection = gpu_config.enable_russian_roulette;
+					gpu_config.enable_russian_roulette = false;
+					russian_roulette_disabled_for_counter_collection = true;
+				}
 				experiment_state = ExperimentState::COLLECTING_COUNTERS;
 			} else {
 				gpu_config.num_bounces = cpu_config.measurement_bounces;
@@ -330,6 +339,7 @@ struct Integrator {
 	bool aov_render_gui_checkbox(AOVType aov_type, const char * aov_name);
 
 	void build_tlas();
+	void update_bvh2_parent_indices();
 
 	virtual void update(float delta, Allocator * frame_allocator);
 	virtual void render() = 0;

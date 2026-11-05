@@ -47,6 +47,23 @@ __device__ __constant__ unsigned long long * bvh_counter;
 __device__ __constant__ unsigned long long * triangle_counter;
 __device__ __constant__ unsigned long long * mesh_counter;
 __device__ __constant__ bool * counter_mode;
+__device__ __constant__ bool * closest_hit_path_counter_mode;
+__device__ __constant__ int * bvh2_parent_indices;
+__device__ __constant__ int bvh2_parent_index_count;
+
+// TLAS and every BLAS are separate roots in the aggregated node array. The
+// caller invokes this once for the final TLAS leaf and once for the final
+// BLAS leaf.
+__device__ inline void bvh2_count_hit_path(int leaf_node_index) {
+	if (leaf_node_index == INVALID || !bvh_counter || !bvh2_parent_indices) return;
+
+	for (int node_index = leaf_node_index, step = 0;
+		node_index != INVALID && step < bvh2_parent_index_count;
+		node_index = bvh2_parent_indices[node_index], ++step) {
+		if (node_index < 0 || node_index >= bvh2_parent_index_count) return;
+		atomicAdd(&bvh_counter[node_index], 1ull);
+	}
+}
 
 __device__ void bvh2_trace(TraversalData * traversal_data, int ray_count, int * rays_retired) {
 	extern __shared__ int shared_stack_bvh2[];
@@ -61,6 +78,9 @@ __device__ void bvh2_trace(TraversalData * traversal_data, int ray_count, int * 
 	int  tlas_stack_size;
 	int  mesh_id;
 	bool mesh_has_identity_transform;
+	int  active_tlas_leaf;
+	int  closest_tlas_leaf;
+	int  closest_blas_leaf;
 
 	while (true) {
 		bool inactive = stack_size == 0;
@@ -76,6 +96,9 @@ __device__ void bvh2_trace(TraversalData * traversal_data, int ray_count, int * 
 			ray_hit.triangle_id = INVALID;
 
 			tlas_stack_size = INVALID;
+			active_tlas_leaf = INVALID;
+			closest_tlas_leaf = INVALID;
+			closest_blas_leaf = INVALID;
 
 			// Push root on stack
 			stack_size                              = 1;
@@ -85,6 +108,7 @@ __device__ void bvh2_trace(TraversalData * traversal_data, int ray_count, int * 
 		while (true) {
 			if (stack_size == tlas_stack_size) {
 				tlas_stack_size = INVALID;
+				active_tlas_leaf = INVALID;
 
 				if (!mesh_has_identity_transform) {
 					// Reset Ray to untransformed version
@@ -99,12 +123,13 @@ __device__ void bvh2_trace(TraversalData * traversal_data, int ray_count, int * 
 			const BVH2Node & node = bvh2_nodes[node_index];
 
 			if (node.aabb.intersects(ray, ray_hit.t)) {
-				if(*counter_mode){
+				if (*counter_mode && !*closest_hit_path_counter_mode) {
 					atomicAdd(&bvh_counter[node_index], 1ull);
 				}
 				if (node.is_leaf()) {
 					if (tlas_stack_size == INVALID) {
 						tlas_stack_size = stack_size;
+						active_tlas_leaf = node_index;
 
 						mesh_id = node.first;
 						if(*counter_mode){
@@ -125,7 +150,12 @@ __device__ void bvh2_trace(TraversalData * traversal_data, int ray_count, int * 
 							if(*counter_mode){
 								atomicAdd(&triangle_counter[i], 1ull);
 							}
+							float previous_hit_distance = ray_hit.t;
 							triangle_intersect(mesh_id, i, ray, ray_hit);
+							if (ray_hit.t < previous_hit_distance) {
+								closest_tlas_leaf = active_tlas_leaf;
+								closest_blas_leaf = node_index;
+							}
 						}
 					}
 				} else {
@@ -145,6 +175,10 @@ __device__ void bvh2_trace(TraversalData * traversal_data, int ray_count, int * 
 			}
 
 			if (stack_size == 0) {
+				if (*counter_mode && *closest_hit_path_counter_mode && closest_blas_leaf != INVALID) {
+					bvh2_count_hit_path(closest_tlas_leaf);
+					bvh2_count_hit_path(closest_blas_leaf);
+				}
 				traversal_data->hits.set(ray_index, ray_hit);
 				break;
 			}
@@ -167,6 +201,7 @@ __device__ void bvh2_trace_shadow(ShadowTraversalData * traveral_data, int ray_c
 	int  tlas_stack_size;
 	int  mesh_id;
 	bool mesh_has_identity_transform;
+	int  active_tlas_leaf;
 
 	while (true) {
 		bool inactive = stack_size == 0;
@@ -181,6 +216,7 @@ __device__ void bvh2_trace_shadow(ShadowTraversalData * traveral_data, int ray_c
 			max_distance = traveral_data->max_distance[ray_index];
 
 			tlas_stack_size = INVALID;
+			active_tlas_leaf = INVALID;
 
 			// Push root on stack
 			stack_size                              = 1;
@@ -190,6 +226,7 @@ __device__ void bvh2_trace_shadow(ShadowTraversalData * traveral_data, int ray_c
 		while (true) {
 			if (stack_size == tlas_stack_size) {
 				tlas_stack_size = INVALID;
+				active_tlas_leaf = INVALID;
 
 				if (!mesh_has_identity_transform) {
 					// Reset Ray to untransformed version
@@ -204,12 +241,13 @@ __device__ void bvh2_trace_shadow(ShadowTraversalData * traveral_data, int ray_c
 			const BVH2Node & node = bvh2_nodes[node_index];
 
 			if (node.aabb.intersects(ray, max_distance)) {
-				if(*counter_mode){
+				if (*counter_mode && !*closest_hit_path_counter_mode) {
 					atomicAdd(&bvh_counter[node_index], 1ull);
 				}
 				if (node.is_leaf()) {
 					if (tlas_stack_size == INVALID) {
 						tlas_stack_size = stack_size;
+						active_tlas_leaf = node_index;
 
 						mesh_id = node.first;
 						if(*counter_mode){
@@ -237,6 +275,10 @@ __device__ void bvh2_trace_shadow(ShadowTraversalData * traveral_data, int ray_c
 							}
 						}
 						if (hit) {
+							if (*counter_mode && *closest_hit_path_counter_mode) {
+								bvh2_count_hit_path(active_tlas_leaf);
+								bvh2_count_hit_path(node_index);
+							}
 							stack_size = 0;
 							break;
 						}

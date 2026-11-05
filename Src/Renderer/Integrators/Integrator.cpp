@@ -368,6 +368,14 @@ void Integrator::init_geometry() {
 			ptr_bvh_nodes_2 = CUDAMemory::malloc<BVHNode2>(aggregated_bvh_nodes);
 			cuda_module.get_global("bvh2_nodes").set_value(ptr_bvh_nodes_2);
 
+			// This is only needed by the optional closest-hit counter.  The map
+			// remains in aggregated-node coordinates, while each BVH itself keeps
+			// its normal local child indices on the CPU.
+			if (counter_mode && cpu_config.enable_closest_hit_path_counter) {
+				ptr_bvh2_parent_indices = CUDAMemory::malloc<int>(aggregated_bvh_node_count);
+				cuda_module.get_global("bvh2_parent_indices").set_value(ptr_bvh2_parent_indices);
+			}
+
 			tlas           = make_owned<BVH2>(PinnedAllocator::instance());
 			tlas_converter = make_owned<BVH2Converter>(static_cast<BVH2 &>(*tlas.get()), tlas_raw);
 			break;
@@ -463,6 +471,10 @@ void Integrator::init_geometry() {
 	ptr_counter_mode = CUDAMemory::malloc<bool>(1);
 	cuda_module.get_global("counter_mode").set_value(ptr_counter_mode);
 	CUDAMemory::memset_async(ptr_counter_mode, counter_mode, 1, memory_stream);
+	ptr_closest_hit_path_counter_mode = CUDAMemory::malloc<bool>(1);
+	cuda_module.get_global("closest_hit_path_counter_mode").set_value(ptr_closest_hit_path_counter_mode);
+	CUDAMemory::memset_async(ptr_closest_hit_path_counter_mode,
+		counter_mode && cpu_config.enable_closest_hit_path_counter, 1, memory_stream);
 }
 
 void Integrator::init_sky() {
@@ -542,6 +554,8 @@ void Integrator::free_geometry() {
 	CUDAMemory::free(ptr_bvh_counter); //jichan add
 	CUDAMemory::free(ptr_triangle_counter);
 	CUDAMemory::free(ptr_mesh_counter);
+	if (ptr_bvh2_parent_indices.ptr) CUDAMemory::free(ptr_bvh2_parent_indices);
+	CUDAMemory::free(ptr_closest_hit_path_counter_mode);
 	CUDAMemory::free(ptr_triangles);
 	CUDAMemory::free(ptr_triangle_material_ids);
 }
@@ -590,6 +604,7 @@ bool Integrator::aov_render_gui_checkbox(AOVType aov_type, const char * aov_name
 void Integrator::build_tlas() {
 	tlas_builder->build(scene.meshes);
 	tlas_converter->convert();
+	update_bvh2_parent_indices();
 
 	switch (cpu_config.bvh_type) {
 		case BVHType::BVH:
@@ -618,6 +633,64 @@ void Integrator::build_tlas() {
 	CUDAMemory::memcpy_async(ptr_mesh_transforms,        pinned_mesh_transforms,       scene.meshes.size(), memory_stream);
 	CUDAMemory::memcpy_async(ptr_mesh_transforms_inv,    pinned_mesh_transforms_inv,   scene.meshes.size(), memory_stream);
 	CUDAMemory::memcpy_async(ptr_mesh_transforms_prev,   pinned_mesh_transforms_prev,  scene.meshes.size(), memory_stream);
+}
+
+void Integrator::update_bvh2_parent_indices() {
+	if (!ptr_bvh2_parent_indices.ptr) return;
+
+	Array<int> parent_indices(bvh_counter_count);
+	for (size_t i = 0; i < parent_indices.size(); i++) {
+		parent_indices[i] = INVALID;
+	}
+
+	auto add_bvh_parents = [&parent_indices](const Array<BVHNode2> & nodes, size_t base_index) {
+		for (size_t node_index = 0; node_index < nodes.size(); node_index++) {
+			// Every BVH2 reserves index 1 as a dummy node.  It is not part of
+			// the tree: interpreting its zero-initialized left field as a child
+			// link creates parent[base] = base + 1 and parent[base + 1] = base + 1.
+			if (node_index == 1) continue;
+
+			const BVHNode2 & node = nodes[node_index];
+			if (node.is_leaf()) continue;
+
+			ASSERT(node.left >= 2);
+			const size_t left_child = base_index + static_cast<size_t>(node.left);
+			ASSERT(left_child + 1 < parent_indices.size());
+			parent_indices[left_child]     = static_cast<int>(base_index + node_index);
+			parent_indices[left_child + 1] = static_cast<int>(base_index + node_index);
+		}
+	};
+
+	auto validate_parent_chains = [&parent_indices](const Array<BVHNode2> & nodes, size_t base_index) {
+		for (size_t node_index = 0; node_index < nodes.size(); node_index++) {
+			if (node_index == 1) continue;
+
+			int current = static_cast<int>(base_index + node_index);
+			size_t steps = 0;
+			while (current != INVALID) {
+				ASSERT(current >= static_cast<int>(base_index));
+				ASSERT(current < static_cast<int>(base_index + nodes.size()));
+				ASSERT(steps++ < nodes.size());
+				current = parent_indices[current];
+			}
+		}
+	};
+
+	const BVH2 & current_tlas = *static_cast<BVH2 *>(tlas.get());
+	add_bvh_parents(current_tlas.nodes, 0);
+	validate_parent_chains(current_tlas.nodes, 0);
+
+	for (size_t mesh_data_index = 0; mesh_data_index < scene.asset_manager.mesh_datas.size(); mesh_data_index++) {
+		const BVH2 & blas = *static_cast<BVH2 *>(scene.asset_manager.mesh_datas[mesh_data_index].bvh.get());
+		add_bvh_parents(blas.nodes, mesh_data_bvh_offsets[mesh_data_index]);
+		validate_parent_chains(blas.nodes, mesh_data_bvh_offsets[mesh_data_index]);
+	}
+
+	// parent_indices is local to this function. It must be copied before it is
+	// destroyed; an asynchronous transfer could leave corrupted parent links on
+	// the GPU and make the device-side parent walk fail to terminate.
+	CUDAMemory::memcpy(ptr_bvh2_parent_indices, parent_indices.data(), parent_indices.size());
+	cuda_module.get_global("bvh2_parent_index_count").set_value(static_cast<int>(parent_indices.size()));
 }
 
 void Integrator::update(float delta, Allocator * frame_allocator) {
@@ -744,15 +817,16 @@ void Integrator::update(float delta, Allocator * frame_allocator) {
 
 void Integrator::collapseBVH() {
 	//bv2 -> bvh8
+	const Array<uint64_t> & collapse_counter_results = bvh_counter_results;
 	size_t mesh_data_count = scene.asset_manager.mesh_datas.size();
 	for (size_t i = 0; i < mesh_data_count; i++) {
 		BVH2& oldBvh = *static_cast<BVH2*>(scene.asset_manager.mesh_datas[i].bvh.get());
 		const size_t base = mesh_data_bvh_offsets[i];
 		Array<uint64_t> local_counter(oldBvh.nodes.size());
 		if (counterCollapse || guRDTC) {
-			ASSERT(base + oldBvh.nodes.size() <= bvh_counter_results.size());
+			ASSERT(base + oldBvh.nodes.size() <= collapse_counter_results.size());
 			for (size_t n = 0; n < oldBvh.nodes.size(); n++) {
-				local_counter[n] = bvh_counter_results[base + n];
+				local_counter[n] = collapse_counter_results[base + n];
 			}
 		}
 		OwnPtr<BVH8> newBvh = make_owned<BVH8>();
@@ -775,9 +849,9 @@ void Integrator::collapseBVH() {
 	const BVH2& oldTlas = *static_cast<BVH2*>(tlas.get());
 	Array<uint64_t> local_counter(oldTlas.nodes.size());
 	if (counterCollapse || guRDTC) {
-		ASSERT(oldTlas.nodes.size() <= bvh_counter_results.size());
+		ASSERT(oldTlas.nodes.size() <= collapse_counter_results.size());
 		for (size_t n = 0; n < oldTlas.nodes.size(); n++) {
-			local_counter[n] = bvh_counter_results[n];
+			local_counter[n] = collapse_counter_results[n];
 		}
 	}
 	OwnPtr<BVH8> newTlas = make_owned<BVH8>();

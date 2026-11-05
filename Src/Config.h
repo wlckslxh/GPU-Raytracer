@@ -80,6 +80,13 @@ struct CPUConfig {
 	// path lengths.  This permits, for example, a primary-ray distribution to
 	// guide a full path-tracing measurement.
 	int      counter_collection_bounces = 1;
+	// When enabled, collection traces continue until counter_collection_bounces
+	// unless they miss or are absorbed by the scene.  The user's normal Russian
+	// roulette setting is restored before the post-conversion FPS pass.
+	bool     disable_russian_roulette_during_counter_collection = false;
+	// Attribute counter samples only to final closest-hit paths for regular
+	// rays and first blocking paths for shadow rays.
+	bool     enable_closest_hit_path_counter = false;
 	int      measurement_bounces = 10;
 	// Number of complete camera paths dispatched per pixel in one rendered
 	// frame. Each path uses an independent sample index.

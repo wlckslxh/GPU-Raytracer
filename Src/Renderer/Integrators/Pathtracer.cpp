@@ -46,6 +46,10 @@ void Pathtracer::write_experiment_fps_csv() const {
 	}
 	filename_stem += "b" + std::to_string(cpu_config.counter_collection_bounces) +
 		"_r" + std::to_string(cpu_config.measurement_bounces);
+	filename_stem += cpu_config.disable_russian_roulette_during_counter_collection
+		? "_counter_rr_off" : "_counter_rr_on";
+	filename_stem += cpu_config.enable_closest_hit_path_counter
+		? "_counter_path_closest" : "_counter_path_visit";
 	// Preserve the existing 1-SPP experiment files. Multi-sample frames use a
 	// separate schema and filename so their timing rows cannot be mixed with
 	// the historical 1-SPP measurements.
@@ -71,21 +75,21 @@ void Pathtracer::write_experiment_fps_csv() const {
 	if (guRDTC) {
 		if (write_header) {
 			std::fprintf(file, multi_sample_frame
-				? "scene,source_bvh,gu_rdtc,gu_threshold,counter_bounces,measurement_bounces,counter_frames,warmup_frames,fps_frames,rays_per_pixel,total_time_ms,fps\n"
-				: "scene,source_bvh,gu_rdtc,gu_threshold,counter_bounces,measurement_bounces,counter_frames,warmup_frames,fps_frames,total_time_ms,fps\n");
+				? "scene,source_bvh,gu_rdtc,gu_threshold,counter_bounces,counter_rr_disabled,measurement_bounces,counter_frames,warmup_frames,fps_frames,rays_per_pixel,total_time_ms,fps\n"
+				: "scene,source_bvh,gu_rdtc,gu_threshold,counter_bounces,counter_rr_disabled,measurement_bounces,counter_frames,warmup_frames,fps_frames,total_time_ms,fps\n");
 		}
 		if (multi_sample_frame) {
-			std::fprintf(file, "%s,%s,1,%llu,%d,%d,%llu,%llu,%llu,%d,%.6f,%.6f\n",
+			std::fprintf(file, "%s,%s,1,%llu,%d,%d,%d,%llu,%llu,%llu,%d,%.6f,%.6f\n",
 				scene_name, source_bvh, static_cast<unsigned long long>(guRDTCThreshold),
-				cpu_config.counter_collection_bounces, cpu_config.measurement_bounces,
+				cpu_config.counter_collection_bounces, cpu_config.disable_russian_roulette_during_counter_collection ? 1 : 0, cpu_config.measurement_bounces,
 				static_cast<unsigned long long>(cpu_config.counter_collection_frames),
 				static_cast<unsigned long long>(cpu_config.fps_warmup_frames),
 				static_cast<unsigned long long>(cpu_config.fps_measurement_frames),
 				cpu_config.rays_per_pixel_per_frame, total_frame_time_ms, static_cast<double>(experiment_fps));
 		} else {
-			std::fprintf(file, "%s,%s,1,%llu,%d,%d,%llu,%llu,%llu,%.6f,%.6f\n",
+			std::fprintf(file, "%s,%s,1,%llu,%d,%d,%d,%llu,%llu,%llu,%.6f,%.6f\n",
 				scene_name, source_bvh, static_cast<unsigned long long>(guRDTCThreshold),
-				cpu_config.counter_collection_bounces, cpu_config.measurement_bounces,
+				cpu_config.counter_collection_bounces, cpu_config.disable_russian_roulette_during_counter_collection ? 1 : 0, cpu_config.measurement_bounces,
 				static_cast<unsigned long long>(cpu_config.counter_collection_frames),
 				static_cast<unsigned long long>(cpu_config.fps_warmup_frames),
 				static_cast<unsigned long long>(cpu_config.fps_measurement_frames),
@@ -94,21 +98,21 @@ void Pathtracer::write_experiment_fps_csv() const {
 	} else {
 		if (write_header) {
 			std::fprintf(file, multi_sample_frame
-				? "scene,source_bvh,counter_collapse,wald_collapse,counter_bounces,measurement_bounces,counter_frames,warmup_frames,fps_frames,rays_per_pixel,total_time_ms,fps\n"
-				: "scene,source_bvh,counter_collapse,wald_collapse,counter_bounces,measurement_bounces,counter_frames,warmup_frames,fps_frames,total_time_ms,fps\n");
+				? "scene,source_bvh,counter_collapse,wald_collapse,counter_bounces,counter_rr_disabled,measurement_bounces,counter_frames,warmup_frames,fps_frames,rays_per_pixel,total_time_ms,fps\n"
+				: "scene,source_bvh,counter_collapse,wald_collapse,counter_bounces,counter_rr_disabled,measurement_bounces,counter_frames,warmup_frames,fps_frames,total_time_ms,fps\n");
 		}
 		if (multi_sample_frame) {
-			std::fprintf(file, "%s,%s,%d,%d,%d,%d,%llu,%llu,%llu,%d,%.6f,%.6f\n",
+			std::fprintf(file, "%s,%s,%d,%d,%d,%d,%d,%llu,%llu,%llu,%d,%.6f,%.6f\n",
 				scene_name, source_bvh, counterCollapse ? 1 : 0, waldCollapse ? 1 : 0,
-				cpu_config.counter_collection_bounces, cpu_config.measurement_bounces,
+				cpu_config.counter_collection_bounces, cpu_config.disable_russian_roulette_during_counter_collection ? 1 : 0, cpu_config.measurement_bounces,
 				static_cast<unsigned long long>(cpu_config.counter_collection_frames),
 				static_cast<unsigned long long>(cpu_config.fps_warmup_frames),
 				static_cast<unsigned long long>(cpu_config.fps_measurement_frames),
 				cpu_config.rays_per_pixel_per_frame, total_frame_time_ms, static_cast<double>(experiment_fps));
 		} else {
-			std::fprintf(file, "%s,%s,%d,%d,%d,%d,%llu,%llu,%llu,%.6f,%.6f\n",
+			std::fprintf(file, "%s,%s,%d,%d,%d,%d,%d,%llu,%llu,%llu,%.6f,%.6f\n",
 				scene_name, source_bvh, counterCollapse ? 1 : 0, waldCollapse ? 1 : 0,
-				cpu_config.counter_collection_bounces, cpu_config.measurement_bounces,
+				cpu_config.counter_collection_bounces, cpu_config.disable_russian_roulette_during_counter_collection ? 1 : 0, cpu_config.measurement_bounces,
 				static_cast<unsigned long long>(cpu_config.counter_collection_frames),
 				static_cast<unsigned long long>(cpu_config.fps_warmup_frames),
 				static_cast<unsigned long long>(cpu_config.fps_measurement_frames),
@@ -1001,6 +1005,10 @@ void Pathtracer::begin_bvh8_measurement() {
 	// render. update() uploads this modified GPU configuration before the next
 	// render call, after the asynchronous BVH8 upload is visible.
 	gpu_config.num_bounces = cpu_config.measurement_bounces;
+	if (russian_roulette_disabled_for_counter_collection) {
+		gpu_config.enable_russian_roulette = russian_roulette_before_counter_collection;
+		russian_roulette_disabled_for_counter_collection = false;
+	}
 	invalidated_gpu_config = true;
 
 	collapseBVH();
