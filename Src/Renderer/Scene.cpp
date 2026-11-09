@@ -29,6 +29,16 @@ bool read_vec3(const json & value, Vector3 & result) {
 	return true;
 }
 
+bool read_quaternion(const json & value, Quaternion & result) {
+	if (!value.is_array() || value.size() != 4) return false;
+	if (!value[0].is_number() || !value[1].is_number() || !value[2].is_number() || !value[3].is_number()) return false;
+	result = Quaternion(value[0].get<float>(), value[1].get<float>(), value[2].get<float>(), value[3].get<float>());
+	const float length = Quaternion::length(result);
+	if (length == 0.0f) return false;
+	result = Quaternion::normalize(result);
+	return true;
+}
+
 bool has_member(const json & value, const char * name) {
 	return value.is_object() && value.find(name) != value.end();
 }
@@ -79,6 +89,25 @@ void load_scene_manifest(Scene & scene, const String & manifest_filename) {
 		}
 	}
 
+	if (has_member(manifest, "counter_camera_views") && manifest["counter_camera_views"].is_array()) {
+		for (const json & value : manifest["counter_camera_views"]) {
+			CameraPreset view;
+			if (!value.is_object() || !has_member(value, "position") || !has_member(value, "rotation") ||
+				!read_vec3(value["position"], view.position) || !read_quaternion(value["rotation"], view.rotation)) {
+				IO::print("WARNING: Ignoring invalid counter camera view in '{}'\n"_sv, manifest_filename);
+				continue;
+			}
+			scene.counter_camera_views.push_back(view);
+		}
+	}
+	if (has_member(manifest, "counter_camera_target")) {
+		if (read_vec3(manifest["counter_camera_target"], scene.counter_camera_target)) {
+			scene.has_counter_camera_target = true;
+		} else {
+			IO::print("WARNING: Ignoring invalid counter camera target in '{}'\n"_sv, manifest_filename);
+		}
+	}
+
 	if (has_member(manifest, "camera_keyframes") && manifest["camera_keyframes"].is_array()) {
 		for (const json & value : manifest["camera_keyframes"]) {
 			CameraKeyframe keyframe;
@@ -119,7 +148,7 @@ void load_scene_file(Scene & scene, const String & scene_filename) {
 
 } // namespace
 
-Scene::Scene(Allocator * allocator) : allocator(allocator), asset_manager(allocator), camera(Math::deg_to_rad(85.0f)), meshes(allocator), punctual_lights(allocator), directional_lights(allocator), camera_presets(allocator), camera_keyframes(allocator) {
+Scene::Scene(Allocator * allocator) : allocator(allocator), asset_manager(allocator), camera(Math::deg_to_rad(85.0f)), meshes(allocator), punctual_lights(allocator), directional_lights(allocator), camera_presets(allocator), counter_camera_views(allocator), camera_keyframes(allocator) {
 	LinearAllocator<MEGABYTES(4)> load_allocator;
 
 	for (int i = 0; i < cpu_config.scene_filenames.size(); i++) {
@@ -139,6 +168,74 @@ bool Scene::set_camera_preset(size_t preset_index) {
 	if (preset_index >= camera_presets.size()) return false;
 	camera.position = camera_presets[preset_index].position;
 	camera.rotation = camera_presets[preset_index].rotation;
+	return true;
+}
+
+bool Scene::set_counter_camera_sample(uint64_t sample_index, uint64_t sample_count) {
+	if (counter_camera_views.size() == 0 || sample_count == 0) return false;
+	auto set_counter_rotation = [this](const Quaternion & fallback) {
+		if (!has_counter_camera_target) {
+			camera.rotation = fallback;
+			return;
+		}
+
+		const Vector3 look_direction = camera.position - counter_camera_target;
+		if (Vector3::length_squared(look_direction) == 0.0f) {
+			camera.rotation = fallback;
+			return;
+		}
+
+		const Vector3 normalized_direction = Vector3::normalize(look_direction);
+		const Vector3 world_up(0.0f, 1.0f, 0.0f);
+		const Vector3 alternate_up(0.0f, 0.0f, 1.0f);
+		const Vector3 up = fabsf(Vector3::dot(normalized_direction, world_up)) < 0.999f
+			? world_up : alternate_up;
+		camera.rotation = Quaternion::look_rotation(look_direction, up);
+	};
+	const uint64_t clamped_sample = Math::min(sample_index, sample_count - 1);
+	if (counter_camera_views.size() == 1 || sample_count == 1) {
+		camera.position = counter_camera_views[0].position;
+		set_counter_rotation(counter_camera_views[0].rotation);
+		if (clamped_sample == 0) {
+			IO::print("Counter camera view 1/1 (frame 1/{})\n"_sv, sample_count);
+		}
+		return true;
+	}
+
+	const float progress = float(clamped_sample) / float(sample_count - 1);
+	const float scaled_segment = progress * float(counter_camera_views.size() - 1);
+	const size_t segment = Math::min(
+		counter_camera_views.size() - 2,
+		static_cast<size_t>(scaled_segment));
+	const float t = Math::clamp(scaled_segment - float(segment), 0.0f, 1.0f);
+
+	if (clamped_sample == 0) {
+		IO::print("Counter camera segment 1/{}: view 1 -> 2 (frame 1/{})\n"_sv,
+			counter_camera_views.size() - 1, sample_count);
+	} else {
+		const float previous_progress = float(clamped_sample - 1) / float(sample_count - 1);
+		const size_t previous_segment = Math::min(
+			counter_camera_views.size() - 2,
+			static_cast<size_t>(previous_progress * float(counter_camera_views.size() - 1)));
+		if (segment != previous_segment) {
+			IO::print("Counter camera segment {}/{}: view {} -> {} (frame {}/{})\n"_sv,
+				segment + 1, counter_camera_views.size() - 1,
+				segment + 1, segment + 2, clamped_sample + 1, sample_count);
+		}
+	}
+
+	const CameraPreset & a = counter_camera_views[segment];
+	const CameraPreset & b = counter_camera_views[segment + 1];
+	camera.position = a.position * (1.0f - t) + b.position * t;
+
+	Quaternion rotation_b = b.rotation;
+	const float rotation_dot =
+		a.rotation.x * rotation_b.x + a.rotation.y * rotation_b.y +
+		a.rotation.z * rotation_b.z + a.rotation.w * rotation_b.w;
+	if (rotation_dot < 0.0f) {
+		rotation_b = Quaternion(-rotation_b.x, -rotation_b.y, -rotation_b.z, -rotation_b.w);
+	}
+	set_counter_rotation(Quaternion::nlerp(a.rotation, rotation_b, t));
 	return true;
 }
 

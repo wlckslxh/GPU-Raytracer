@@ -720,12 +720,25 @@ void Integrator::update(float delta, Allocator * frame_allocator) {
 		case ExperimentState::PREPARING_BVH8:
 			break;
 		case ExperimentState::COLLECTING_COUNTERS:
-			// Camera counter rays follow the configured keyframe path. Vertex
+			// Camera counter rays use a dedicated interpolated view path when the manifest
+			// provides them, and otherwise fall back to the validation path. Vertex
 			// counter rays do not consume the camera, and updating it here would
 			// reset the renderer sample index every counter frame.
 			if (!cpu_config.enable_vertex_counter_rays) {
-				invalidated_camera |= scene.set_camera_keyframe_sample(
-					bvh_counter_dumped, cpu_config.counter_collection_frames);
+				if (cpu_config.use_dedicated_counter_camera_views && scene.counter_camera_views.size() > 0) {
+					invalidated_camera |= scene.set_counter_camera_sample(
+						bvh_counter_dumped, cpu_config.counter_collection_frames);
+				} else {
+					if (bvh_counter_dumped == 0) {
+						if (cpu_config.use_dedicated_counter_camera_views) {
+							IO::print("No dedicated counter camera views; using the existing camera keyframe path.\n"_sv);
+						} else {
+							IO::print("Dedicated counter camera views disabled; using the existing camera keyframe path.\n"_sv);
+						}
+					}
+					invalidated_camera |= scene.set_camera_keyframe_sample(
+						bvh_counter_dumped, cpu_config.counter_collection_frames);
+				}
 			}
 			break;
 		case ExperimentState::WARMING_UP_FPS:

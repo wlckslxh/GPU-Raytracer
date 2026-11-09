@@ -77,10 +77,10 @@ int main(int num_args, char ** args) {
 	Args::parse(num_args, args);
 	if (cpu_config.scene_filenames.size() == 0) {
 		//cpu_config.scene_filenames.push_back("Data/sponza/scene.xml"_sv);
-		cpu_config.scene_filenames.push_back("Data/models_0930/bistroexterior_mod_etc1s/bistroexterior_mod.json"_sv);
+		//cpu_config.scene_filenames.push_back("Data/models_0930/bistroexterior_mod_etc1s/bistroexterior_mod.json"_sv);
 		//cpu_config.scene_filenames.push_back("Data/models_0930/bistrointerior_etc1s/Bistrointerior.json"_sv);
 		//cpu_config.scene_filenames.push_back("Data/models_0930/intelSponza_mod_etc1s/intelSponza_mod.json"_sv);
-		//cpu_config.scene_filenames.push_back("Data/models_0930/sanMiguel_etc1s/sanMiguel.json"_sv);
+		cpu_config.scene_filenames.push_back("Data/models_0930/sanMiguel_etc1s/sanMiguel.json"_sv);
 		//cpu_config.scene_filenames.push_back("Data/models_0930/sponza_mod_etc1s/sponza_mod.json"_sv);
 		//cpu_config.scene_filenames.push_back("Data/bistroexterior/bistroexterior.gltf"_sv);
 	}
@@ -112,6 +112,17 @@ int main(int num_args, char ** args) {
 
 	LinearAllocator<MEGABYTES(1)> scene_allocator;
 	Scene scene(&scene_allocator);
+	if (cpu_config.counter_camera_view_index >= 0) {
+		const size_t view_index = static_cast<size_t>(cpu_config.counter_camera_view_index);
+		if (view_index >= scene.counter_camera_views.size()) {
+			IO::print("Counter camera view {} is out of range; scene contains {} view(s).\n"_sv,
+				view_index + 1, scene.counter_camera_views.size());
+			IO::exit(1);
+		}
+		scene.set_counter_camera_sample(view_index, scene.counter_camera_views.size());
+		IO::print("Rendering counter camera view {}/{}\n"_sv,
+			view_index + 1, scene.counter_camera_views.size());
+	}
 
 	OwnPtr<Integrator> integrator = nullptr;
 
@@ -139,6 +150,7 @@ int main(int num_args, char ** args) {
 	timing.time_of_last_screenshot = INVALID;
 
 	LinearAllocator<MEGABYTES(16)> frame_allocator;
+	size_t counter_camera_preview_index = 0;
 
 	// Render loop
 	while (!window.is_closed) {
@@ -175,6 +187,14 @@ int main(int num_args, char ** args) {
 			capture_screen(window, *integrator.get(), screenshot_name);
 
 			timing.time_of_last_screenshot = timing.now;
+		}
+		if (!cpu_config.enable_bvh2_to_bvh8_experiment && Input::is_key_pressed(SDL_SCANCODE_V) &&
+			scene.counter_camera_views.size() > 0) {
+			scene.set_counter_camera_sample(counter_camera_preview_index, scene.counter_camera_views.size());
+			integrator->invalidated_camera = true;
+			IO::print("Previewing counter camera view {}/{}\n"_sv,
+				counter_camera_preview_index + 1, scene.counter_camera_views.size());
+			counter_camera_preview_index = (counter_camera_preview_index + 1) % scene.counter_camera_views.size();
 		}
 
 		if (ImGui::IsMouseClicked(1)) {

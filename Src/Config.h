@@ -31,8 +31,10 @@ enum struct BVHType {
 
 struct CPUConfig {
 	// CUDA render target resolution. Scene film settings and --width/--height modify these.
-	int initial_width  = 2560;
-	int initial_height = 1440;
+	/*int initial_width  = 2560;
+	int initial_height = 1440;*/
+	int initial_width = 1280;
+	int initial_height = 720;
 
 	// SDL window size. This only controls presentation and GUI size.
 	int initial_window_width  = 1280;
@@ -47,6 +49,9 @@ struct CPUConfig {
 
 	int    output_sample_index = INVALID;
 	String output_filename     = "render.ppm"_sv;
+	// Optional one-based counter-camera view selected for an ordinary render.
+	// A negative value preserves the normal scene camera preset behavior.
+	int counter_camera_view_index = -1;
 
 	bool bvh_force_rebuild        = false;
 	bool enable_bvh_optimization  = false;
@@ -60,12 +65,19 @@ struct CPUConfig {
 	// When false, the renderer keeps and traces the BVH selected by bvh_type.
 	bool     enable_bvh2_to_bvh8_experiment = false;
 	bool     enable_bvh_counter_collection = true;
+	// Prefer counter_camera_views during pixel-counter collection when the
+	// manifest provides them. Disable this to collect and measure FPS on the
+	// same camera_keyframes path.
+	bool     use_dedicated_counter_camera_views = true;
 	// Records the number of camera/path rays traced at every bounce while the
 	// source BVH2 is active. This is a measurement-only mode: it stops after
 	// collection and does not collapse to BVH8.
 	bool     enable_bounce_ray_count_dump = false;
 	bool     enable_experiment_fps_measurement = true;
 	bool     exit_after_experiment = false;
+	// Optional filename tag used to keep otherwise identical experiment rows
+	// from different camera/evaluation protocols in separate CSV files.
+	String   experiment_tag;
 	// Controls the BVH2 -> BVH8 experiment conversion performed after counter
 	// collection. These are kept in CPUConfig so a batch run can set them per
 	// process without editing source files.

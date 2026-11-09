@@ -66,6 +66,18 @@ void Pathtracer::write_experiment_fps_csv() const {
 	if (multi_sample_frame) {
 		filename_stem += "_spp" + std::to_string(cpu_config.rays_per_pixel_per_frame);
 	}
+	if (!cpu_config.experiment_tag.is_empty()) {
+		std::string sanitized_tag = cpu_config.experiment_tag.c_str();
+		for (char & character : sanitized_tag) {
+			const bool valid =
+				(character >= 'a' && character <= 'z') ||
+				(character >= 'A' && character <= 'Z') ||
+				(character >= '0' && character <= '9') ||
+				character == '-' || character == '_';
+			if (!valid) character = '_';
+		}
+		filename_stem += "_exp-" + sanitized_tag;
+	}
 	filename_stem += ".csv";
 	const std::filesystem::path filename = directory / filename_stem;
 	const bool write_header = !std::filesystem::exists(filename) || std::filesystem::file_size(filename, error) == 0;
@@ -1182,12 +1194,14 @@ void Pathtracer::render() {
 		cpu_config.enable_vertex_counter_rays &&
 		vertex_counter_seed_count > 0;
 	if (vertex_counter_pass) {
-		batch_size = Math::min(BATCH_SIZE, int(vertex_counter_seed_count * size_t(cpu_config.counter_rays_per_vertex)));
+		const int vertex_batch_size = Math::min(
+			BATCH_SIZE,
+			int(vertex_counter_seed_count * size_t(cpu_config.counter_rays_per_vertex)));
 		// Couple vertex-counter sampling directly to the completed counter-frame
 		// count. The normal renderer sample index can be reset by camera or GPU
 		// state changes and must not cause repeated vertex directions.
 		const int counter_frame_sample_index = static_cast<int>(bvh_counter_dumped);
-		render_vertex_counter_paths(counter_frame_sample_index, batch_size);
+		render_vertex_counter_paths(counter_frame_sample_index, vertex_batch_size);
 
 		if (bvh_counter_dumped + 1 >= cpu_config.counter_collection_frames) {
 			CUDACALL(cuStreamSynchronize(nullptr));
@@ -1208,7 +1222,11 @@ void Pathtracer::render() {
 			++bvh_counter_dumped;
 		}
 
-		pinned_buffer_sizes->reset(Math::min(BATCH_SIZE, pixel_count));
+		// The following BVH8 FPS pass may use a smaller batch than the vertex
+		// pass when analytic lights limit the fixed shadow-ray buffer. Restore
+		// that exact path batch size so kernel_sort cannot consume stale vertex
+		// entries beyond the rays overwritten by kernel_generate.
+		pinned_buffer_sizes->reset(batch_size);
 		global_buffer_sizes.set_value(*pinned_buffer_sizes);
 		return;
 	}

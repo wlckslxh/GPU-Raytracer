@@ -52,6 +52,9 @@ struct Scene {
 	Array<PunctualLight> punctual_lights;
 	Array<DirectionalLight> directional_lights;
 	Array<CameraPreset> camera_presets;
+	Array<CameraPreset> counter_camera_views;
+	Vector3             counter_camera_target;
+	bool                has_counter_camera_target = false;
 	Array<CameraKeyframe> camera_keyframes;
 	Sky         sky;
 
@@ -67,6 +70,7 @@ struct Scene {
 	Mesh & add_mesh(String name, Handle<MeshData> mesh_data_handle, Handle<Material> material_handle = Handle<Material>::get_default());
 
 	bool set_camera_preset(size_t preset_index);
+	bool set_counter_camera_sample(uint64_t sample_index, uint64_t sample_count);
 	bool set_camera_keyframe_time(float time);
 	bool set_camera_keyframe_sample(uint64_t sample_index, uint64_t sample_count);
 
