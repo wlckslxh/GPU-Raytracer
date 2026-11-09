@@ -1,5 +1,7 @@
 #include "BVH8Converter.h"
 
+#include <cmath>
+#include <limits>
 #include <string.h>
 
 #include "Core/IO.h"
@@ -15,13 +17,32 @@ void BVH8Converter::convert() {
 
 	// Fill cost table using dynamic programming (bottom up)
 	if (counterCollapse) {
-		rootCounterSA = bvh2.nodes[0].aabb.surface_area() / (counter[0] != 0 ? (float)counter[0] : 1);
+		ASSERT(counter.size() == bvh2.nodes.size());
+		rootSurfaceArea = double(bvh2.nodes[0].aabb.surface_area());
+		inverseRootCounter = counter[0] != 0 ? 1.0 / double(counter[0]) : 0.0;
 	}
 	calculate_cost(0, bvh2.nodes);
 
 	// Collapse SBVH into 8-way tree (top down)
 	collapse(bvh2.nodes, bvh2.indices, 0, 0);
 	ASSERT(bvh8.indices.size() == bvh2.indices.size());
+}
+
+float BVH8Converter::counter_visit_cost(int node_index) const {
+	if (inverseRootCounter == 0.0) return 0.0;
+
+	// Normalize before applying the scene-area scale. This avoids forming a
+	// very small float scale (root area / a large counter) and then multiplying
+	// it by a lossy float conversion of the uint64 counter.
+	double visit_probability = double(counter[node_index]) * inverseRootCounter;
+	ASSERT(std::isfinite(visit_probability));
+	ASSERT(visit_probability >= 0.0);
+	// Every descendant visit should be bounded by the root visit count. Keep
+	// release builds robust to a malformed or saturated counter buffer.
+	if (visit_probability > 1.0) visit_probability = 1.0;
+	const double cost = rootSurfaceArea * visit_probability;
+	ASSERT(std::isfinite(cost));
+	return float(cost);
 }
 
 void BVH8Converter::convert_greedy() {
@@ -66,7 +87,7 @@ int BVH8Converter::calculate_cost(int node_index, const Array<BVHNode2> & nodes)
 		// SAH cost
 		float cost_leaf;
 		if (counterCollapse) {
-			cost_leaf = node.aabb.surface_area() + counter[node_index] * rootCounterSA;
+			cost_leaf = node.aabb.surface_area() + counter_visit_cost(node_index);
 		}
 		else {
 			cost_leaf = node.aabb.surface_area() * float(num_primitives);
@@ -85,13 +106,18 @@ int BVH8Converter::calculate_cost(int node_index, const Array<BVHNode2> & nodes)
 		{
 			float cost_leaf;
 			if (counterCollapse) {
-				cost_leaf = num_primitives <= 3 ? node.aabb.surface_area() + counter[node_index] * rootCounterSA : INFINITY;
+				// A collapsed leaf tests every primitive when it is visited. Preserve
+				// that primitive-intersection cost instead of pricing 1-, 2-, and
+				// 3-primitive leaves identically.
+				cost_leaf = num_primitives <= 3
+					? float(num_primitives) * (node.aabb.surface_area() + counter_visit_cost(node_index))
+					: std::numeric_limits<float>::infinity();
 			}
 			else {
-				cost_leaf = num_primitives <= 3 ? float(num_primitives) * node.aabb.surface_area() : INFINITY;
+				cost_leaf = num_primitives <= 3 ? float(num_primitives) * node.aabb.surface_area() : std::numeric_limits<float>::infinity();
 			}
 
-			float cost_distribute = INFINITY;
+			float cost_distribute = std::numeric_limits<float>::infinity();
 
 			char distribute_left  = INVALID;
 			char distribute_right = INVALID;
@@ -111,7 +137,7 @@ int BVH8Converter::calculate_cost(int node_index, const Array<BVHNode2> & nodes)
 
 			float cost_internal = cost_distribute + node.aabb.surface_area();
 			if (counterCollapse) {
-				cost_internal += counter[node_index] * rootCounterSA;
+				cost_internal += counter_visit_cost(node_index);
 			}
 
 			if (cost_leaf < cost_internal) {
@@ -274,7 +300,7 @@ void BVH8Converter::order_children(int node_index, const Array<BVHNode2> & nodes
 	// Greedy child ordering, the paper mentions this as an alternative
 	// that works about as well as the auction algorithm in practice
 	while (true) {
-		float min_cost = INFINITY;
+		float min_cost = std::numeric_limits<float>::infinity();
 
 		int min_slot  = INVALID;
 		int min_index = INVALID;

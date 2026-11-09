@@ -69,6 +69,9 @@ struct CPUConfig {
 	// manifest provides them. Disable this to collect and measure FPS on the
 	// same camera_keyframes path.
 	bool     use_dedicated_counter_camera_views = true;
+	// Keep the historical FPS path by default. Experiments can opt into timing
+	// the same dedicated counter-camera path used for counter collection.
+	bool     use_dedicated_fps_camera_views = false;
 	// Records the number of camera/path rays traced at every bounce while the
 	// source BVH2 is active. This is a measurement-only mode: it stops after
 	// collection and does not collapse to BVH8.

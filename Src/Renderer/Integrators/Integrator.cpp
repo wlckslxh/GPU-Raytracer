@@ -743,12 +743,20 @@ void Integrator::update(float delta, Allocator * frame_allocator) {
 			break;
 		case ExperimentState::WARMING_UP_FPS:
 			// Warm up with a fixed camera, then restart the measured path at 0.
-			invalidated_camera |= scene.set_camera_keyframe_sample(
-				0, cpu_config.fps_measurement_frames);
+			if (cpu_config.use_dedicated_fps_camera_views && scene.counter_camera_views.size() > 0) {
+				invalidated_camera |= scene.set_counter_camera_sample(0, cpu_config.fps_measurement_frames);
+			} else {
+				invalidated_camera |= scene.set_camera_keyframe_sample(0, cpu_config.fps_measurement_frames);
+			}
 			break;
 		case ExperimentState::MEASURING_FPS:
-			invalidated_camera |= scene.set_camera_keyframe_sample(
-				measuringFrame, cpu_config.fps_measurement_frames);
+			if (cpu_config.use_dedicated_fps_camera_views && scene.counter_camera_views.size() > 0) {
+				invalidated_camera |= scene.set_counter_camera_sample(
+					measuringFrame, cpu_config.fps_measurement_frames);
+			} else {
+				invalidated_camera |= scene.set_camera_keyframe_sample(
+					measuringFrame, cpu_config.fps_measurement_frames);
+			}
 			break;
 		case ExperimentState::IDLE:
 		case ExperimentState::FINISHED:

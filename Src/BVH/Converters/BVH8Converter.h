@@ -13,7 +13,8 @@ struct BVH8Converter final : BVHConverter {
 	// before threshold t. This remains distinct from counterCollapse.
 	bool guRDTC = false;
 	uint64_t guRDTCThreshold = 32ull;
-	float rootCounterSA;
+	double rootSurfaceArea = 0.0;
+	double inverseRootCounter = 0.0;
 	//jichan add end
 
 	BVH8Converter(BVH8 & bvh8, const BVH2 & bvh2) : bvh8(bvh8), bvh2(bvh2) {
@@ -42,6 +43,7 @@ private:
 	};
 
 	Array<Decision> decisions;
+	float counter_visit_cost(int node_index) const;
 
 	int calculate_cost(int node_index, const Array<BVHNode2> & nodes);
 
