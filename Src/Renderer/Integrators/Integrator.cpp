@@ -859,6 +859,9 @@ void Integrator::collapseBVH() {
 		BVH8Converter converter(*newBvh.get(), oldBvh);
 		//조건에 따라 converter 조건 결정
 		converter.counterCollapse = counterCollapse;
+		converter.counterCostLambda = cpu_config.counter_cost_lambda;
+		converter.counterCollapseMaxDepth = cpu_config.counter_collapse_max_depth;
+		converter.legacyCounterPrimitiveCost = cpu_config.legacy_counter_primitive_cost;
 		converter.guRDTC = guRDTC;
 		converter.guRDTCThreshold = guRDTCThreshold;
 		converter.counter = std::move(local_counter);
@@ -884,6 +887,9 @@ void Integrator::collapseBVH() {
 	
 	BVH8Converter converter(*newTlas.get(), oldTlas);
 	converter.counterCollapse = counterCollapse;
+	converter.counterCostLambda = cpu_config.counter_cost_lambda;
+	converter.counterCollapseMaxDepth = cpu_config.counter_collapse_max_depth;
+	converter.legacyCounterPrimitiveCost = cpu_config.legacy_counter_primitive_cost;
 	converter.guRDTC = guRDTC;
 	converter.guRDTCThreshold = guRDTCThreshold;
 	converter.counter = std::move(local_counter);

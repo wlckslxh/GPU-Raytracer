@@ -9,6 +9,9 @@ struct BVH8Converter final : BVHConverter {
 	//jichan add
 	Array<uint64_t> counter;
 	bool counterCollapse = false;
+	float counterCostLambda = 1.0f;
+	int counterCollapseMaxDepth = -1;
+	bool legacyCounterPrimitiveCost = true;
 	// Gu et al. CBTC-RD selection: counter ratio after threshold t, SA ratio
 	// before threshold t. This remains distinct from counterCollapse.
 	bool guRDTC = false;
@@ -43,9 +46,12 @@ private:
 	};
 
 	Array<Decision> decisions;
+	Array<int> nodeDepths;
 	float counter_visit_cost(int node_index) const;
+	bool counter_enabled_at_depth(int depth) const;
+	void calculate_depths(int node_index, const Array<BVHNode2> & nodes, int depth);
 
-	int calculate_cost(int node_index, const Array<BVHNode2> & nodes);
+	int calculate_cost(int node_index, const Array<BVHNode2> & nodes, int depth);
 
 	void get_children  (int node_index, const Array<BVHNode2> & nodes, int children[8], int & child_count, int i);
 	void get_children_greedy(int node_index, const Array<BVHNode2> & nodes, int children[8], int & child_count);

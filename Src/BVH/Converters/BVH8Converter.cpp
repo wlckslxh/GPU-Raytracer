@@ -21,7 +21,7 @@ void BVH8Converter::convert() {
 		rootSurfaceArea = double(bvh2.nodes[0].aabb.surface_area());
 		inverseRootCounter = counter[0] != 0 ? 1.0 / double(counter[0]) : 0.0;
 	}
-	calculate_cost(0, bvh2.nodes);
+	calculate_cost(0, bvh2.nodes, 0);
 
 	// Collapse SBVH into 8-way tree (top down)
 	collapse(bvh2.nodes, bvh2.indices, 0, 0);
@@ -45,6 +45,18 @@ float BVH8Converter::counter_visit_cost(int node_index) const {
 	return float(cost);
 }
 
+bool BVH8Converter::counter_enabled_at_depth(int depth) const {
+	return counterCollapse && (counterCollapseMaxDepth < 0 || depth < counterCollapseMaxDepth);
+}
+
+void BVH8Converter::calculate_depths(int node_index, const Array<BVHNode2> & nodes, int depth) {
+	nodeDepths[node_index] = depth;
+	const BVHNode2 & node = nodes[node_index];
+	if (node.is_leaf()) return;
+	calculate_depths(node.left, nodes, depth + 1);
+	calculate_depths(node.left + 1, nodes, depth + 1);
+}
+
 void BVH8Converter::convert_greedy() {
 	if (bvh2.nodes.size() == 0) {
 		IO::print("ERROR: BVH8 greedy converter requires a non-empty BVH2!\n"_sv);
@@ -61,6 +73,8 @@ void BVH8Converter::convert_greedy() {
 	bvh8.indices.reserve(bvh2.indices.size());
 	bvh8.nodes.clear();
 	bvh8.nodes.emplace_back(); // Root
+	nodeDepths.resize(bvh2.nodes.size());
+	calculate_depths(0, bvh2.nodes, 0);
 
 	collapse_greedy(bvh2.nodes, bvh2.indices, 0, 0);
 	ASSERT(bvh8.indices.size() == bvh2.indices.size());
@@ -72,8 +86,9 @@ void BVH8Converter::convert_gu_rdtc() {
 	convert_greedy();
 }
 
-int BVH8Converter::calculate_cost(int node_index, const Array<BVHNode2> & nodes) {
+int BVH8Converter::calculate_cost(int node_index, const Array<BVHNode2> & nodes, int depth) {
 	const BVHNode2 & node = nodes[node_index];
+	const bool use_counter = counter_enabled_at_depth(depth);
 
 	int num_primitives;
 
@@ -86,8 +101,8 @@ int BVH8Converter::calculate_cost(int node_index, const Array<BVHNode2> & nodes)
 
 		// SAH cost
 		float cost_leaf;
-		if (counterCollapse) {
-			cost_leaf = node.aabb.surface_area() + counter_visit_cost(node_index);
+		if (use_counter) {
+			cost_leaf = node.aabb.surface_area() + counterCostLambda * counter_visit_cost(node_index);
 		}
 		else {
 			cost_leaf = node.aabb.surface_area() * float(num_primitives);
@@ -99,18 +114,16 @@ int BVH8Converter::calculate_cost(int node_index, const Array<BVHNode2> & nodes)
 		}
 	} else {
 		num_primitives =
-			calculate_cost(node.left,     nodes) +
-			calculate_cost(node.left + 1, nodes);
+			calculate_cost(node.left,     nodes, depth + 1) +
+			calculate_cost(node.left + 1, nodes, depth + 1);
 
 		// Separate case: i=0 (i=1 in the paper)
 		{
 			float cost_leaf;
-			if (counterCollapse) {
-				// A collapsed leaf tests every primitive when it is visited. Preserve
-				// that primitive-intersection cost instead of pricing 1-, 2-, and
-				// 3-primitive leaves identically.
+			if (use_counter) {
+				const float primitive_factor = legacyCounterPrimitiveCost ? 1.0f : float(num_primitives);
 				cost_leaf = num_primitives <= 3
-					? float(num_primitives) * (node.aabb.surface_area() + counter_visit_cost(node_index))
+					? primitive_factor * (node.aabb.surface_area() + counterCostLambda * counter_visit_cost(node_index))
 					: std::numeric_limits<float>::infinity();
 			}
 			else {
@@ -136,8 +149,8 @@ int BVH8Converter::calculate_cost(int node_index, const Array<BVHNode2> & nodes)
 			}
 
 			float cost_internal = cost_distribute + node.aabb.surface_area();
-			if (counterCollapse) {
-				cost_internal += counter_visit_cost(node_index);
+			if (use_counter) {
+				cost_internal += counterCostLambda * counter_visit_cost(node_index);
 			}
 
 			if (cost_leaf < cost_internal) {
@@ -219,6 +232,7 @@ void BVH8Converter::get_children(int node_index, const Array<BVHNode2> & nodes, 
 void BVH8Converter::get_children_greedy(int node_index, const Array<BVHNode2> & nodes, int children[8], int & child_count) {
 	children[0] = node_index;
 	child_count = 1;
+	const bool use_counter = counter_enabled_at_depth(nodeDepths[node_index]);
 
 	while (child_count < 8) {
 		int largest_index = INVALID;
@@ -242,7 +256,7 @@ void BVH8Converter::get_children_greedy(int node_index, const Array<BVHNode2> & 
 					largest_index = i;
 				}
 			}
-			else if (counterCollapse) {
+			else if (use_counter) {
 				const float parent_area = nodes[node_index].aabb.surface_area();
 				const float surface_share = parent_area > 0.0f
 					? child.aabb.surface_area() / parent_area
@@ -254,7 +268,7 @@ void BVH8Converter::get_children_greedy(int node_index, const Array<BVHNode2> & 
 				const float traversal_share = parent_counter > 0
 					? static_cast<float>(counter[children[i]]) / static_cast<float>(parent_counter)
 					: 0.0f;
-				const float heuristic = surface_share + traversal_share;
+				const float heuristic = surface_share + counterCostLambda * traversal_share;
 				if (largest_index == INVALID || heuristic > largest_area) {
 					largest_area = heuristic;
 					largest_index = i;

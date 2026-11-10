@@ -292,6 +292,7 @@ struct Pathtracer final : Integrator {
 	CUDAEvent::Desc event_desc_reconstruct;
 	CUDAEvent::Desc event_desc_accumulate;
 	CUDAEvent::Desc event_desc_end;
+	bool fps_cuda_profiler_active = false;
 
 	Pathtracer(unsigned frame_buffer_handle, int width, int height, Scene & scene) : Integrator(scene) {
 		cuda_init(frame_buffer_handle, width, height);

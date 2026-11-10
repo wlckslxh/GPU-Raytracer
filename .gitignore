@@ -387,3 +387,4 @@ perf.txt
 *.diff
 *.nsys-rep
 *.sqlite
+*.png

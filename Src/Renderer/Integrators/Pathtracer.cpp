@@ -10,6 +10,7 @@
 #include <string>
 
 #include <Imgui/imgui.h>
+#include <cudaProfiler.h>
 
 #include "Core/Allocators/LinearAllocator.h"
 #include "Core/IO.h"
@@ -1178,6 +1179,16 @@ void Pathtracer::render() {
 		begin_bvh8_measurement();
 		return; // The asynchronous BVH8 upload becomes visible next frame.
 	}
+	// Start on entry to the first measured frame, rather than at the end of the
+	// final warmup frame. This keeps the warmup frame's trailing CUDA work out
+	// of a cudaProfilerApi capture range.
+	if (
+		cpu_config.profile_fps_cuda_kernels &&
+		experiment_state == ExperimentState::MEASURING_FPS &&
+		!fps_cuda_profiler_active) {
+		CUDACALL(cuProfilerStart());
+		fps_cuda_profiler_active = true;
+	}
 
 	// Area lights remain importance-sampled once per path. Punctual and
 	// directional analytic lights are evaluated exhaustively, so reduce the
@@ -1400,6 +1411,13 @@ void Pathtracer::render() {
 			experiment_fps = total_frame_time_ms > 0.0
 				? float(1000.0 * double(cpu_config.fps_measurement_frames) / total_frame_time_ms)
 				: 0.0f;
+			// The end event synchronized above covers every kernel included in the
+			// FPS timing interval. Stop before the post-frame clear below so Nsight
+			// contains exactly the measured render frames and no later CUDA work.
+			if (fps_cuda_profiler_active) {
+				CUDACALL(cuProfilerStop());
+				fps_cuda_profiler_active = false;
+			}
 			IO::print("Experiment FPS: {} ({} frames, {} ms)\\n"_sv,
 				experiment_fps, cpu_config.fps_measurement_frames, total_frame_time_ms);
 			write_experiment_fps_csv();

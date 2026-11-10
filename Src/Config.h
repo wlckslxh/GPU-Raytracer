@@ -31,10 +31,8 @@ enum struct BVHType {
 
 struct CPUConfig {
 	// CUDA render target resolution. Scene film settings and --width/--height modify these.
-	/*int initial_width  = 2560;
-	int initial_height = 1440;*/
-	int initial_width = 1280;
-	int initial_height = 720;
+	int initial_width  = 2560;
+	int initial_height = 1440;
 
 	// SDL window size. This only controls presentation and GUI size.
 	int initial_window_width  = 1280;
@@ -77,6 +75,9 @@ struct CPUConfig {
 	// collection and does not collapse to BVH8.
 	bool     enable_bounce_ray_count_dump = false;
 	bool     enable_experiment_fps_measurement = true;
+	// Bracket only MEASURING_FPS with the CUDA profiler API. Nsight Systems can
+	// use this range to exclude counter collection, collapse, upload and warmup.
+	bool     profile_fps_cuda_kernels = false;
 	bool     exit_after_experiment = false;
 	// Optional filename tag used to keep otherwise identical experiment rows
 	// from different camera/evaluation protocols in separate CSV files.
@@ -86,6 +87,15 @@ struct CPUConfig {
 	// process without editing source files.
 	bool     enable_counter_collapse = true;
 	bool     enable_wald_collapse = false;
+	// Relative weight of the measured traversal term. Zero recovers the
+	// surface-area collapse; one preserves the original counter blend.
+	float    counter_cost_lambda = 1.0f;
+	// Exclusive BVH2 depth limit for counter-guided collapse. -1 applies the
+	// counter at every depth; 0 reproduces the surface-area-only collapse.
+	int      counter_collapse_max_depth = -1;
+	// Preserve the original counter-collapse leaf cost by default. When false,
+	// a collapsed 2- or 3-primitive leaf is additionally charged per primitive.
+	bool     legacy_counter_primitive_cost = true;
 	// Gu et al. CBTC-RD: use visit-count ratio for sufficiently sampled
 	// children, otherwise fall back to the surface-area ratio. This is kept
 	// separate from the project's existing counter-aware heuristic.
