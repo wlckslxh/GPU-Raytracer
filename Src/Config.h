@@ -16,6 +16,12 @@ enum struct OutputFormat {
 	PPM
 };
 
+enum struct CounterCostMode {
+	ADDITIVE,
+	COUNTER_ONLY,
+	MAXIMUM
+};
+
 enum struct MipmapFilterType {
 	BOX,
 	LANCZOS,
@@ -47,6 +53,10 @@ struct CPUConfig {
 
 	int    output_sample_index = INVALID;
 	String output_filename     = "render.ppm"_sv;
+	// Optional one-based sample from an evenly spaced camera_keyframes path.
+	// A negative index preserves the normal scene camera preset behavior.
+	int camera_keyframe_sample_index = -1;
+	int camera_keyframe_sample_count = 0;
 	// Optional one-based counter-camera view selected for an ordinary render.
 	// A negative value preserves the normal scene camera preset behavior.
 	int counter_camera_view_index = -1;
@@ -87,9 +97,19 @@ struct CPUConfig {
 	// process without editing source files.
 	bool     enable_counter_collapse = true;
 	bool     enable_wald_collapse = false;
-	// Relative weight of the measured traversal term. Zero recovers the
-	// surface-area collapse; one preserves the original counter blend.
+	// Relative weight of the measured traversal term. In additive mode zero
+	// recovers the surface-area collapse; one preserves the original blend.
 	float    counter_cost_lambda = 1.0f;
+	CounterCostMode counter_cost_mode = CounterCostMode::ADDITIVE;
+	// Optionally collect primary/path-ray and shadow-ray BVH visits separately,
+	// normalize each distribution by its local BVH root, then collapse with
+	// (primary_probability + shadow_counter_weight * shadow_probability) /
+	// (1 + shadow_counter_weight).
+	bool     separate_primary_shadow_counters = false;
+	float    shadow_counter_weight = 1.0f;
+	// Keep the earlier P + w*S experiment reproducible alongside the newer
+	// root-normalized probability mixture.
+	bool     normalize_primary_shadow_counters = true;
 	// Exclusive BVH2 depth limit for counter-guided collapse. -1 applies the
 	// counter at every depth; 0 reproduces the surface-area-only collapse.
 	int      counter_collapse_max_depth = -1;
@@ -114,6 +134,15 @@ struct CPUConfig {
 	// These paths reuse traversal and BSDF sampling but never write render AOVs.
 	bool     enable_vertex_counter_rays = false;
 	int      counter_rays_per_vertex = 1;
+	// Generate NEE shadow rays for synthetic vertex paths independently of
+	// whether primary and shadow visit counters are stored separately.
+	// Synthetic vertex counter paths include NEE shadow-ray visits by default.
+	// Pass --vertex-counter-shadow-nee false only for an explicit path-only ablation.
+	bool     enable_vertex_counter_shadow_nee = true;
+	// Blend uniform unique-vertex sampling with representative world-space
+	// surface-area sampling while preserving the original total ray budget.
+	// 0 is the historical uniform mode; 1 is pure area-proportional sampling.
+	float    vertex_counter_area_weight = 0.0f;
 	// Attribute counter samples only to final closest-hit paths for regular
 	// rays and first blocking paths for shadow rays.
 	bool     enable_closest_hit_path_counter = false;

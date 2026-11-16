@@ -1,5 +1,8 @@
 #include "Integrator.h"
 
+#include <cmath>
+#include <limits>
+
 #include <GL/glew.h>
 
 #include <Imgui/imgui.h>
@@ -452,6 +455,9 @@ void Integrator::init_geometry() {
 	//set bvh node counters
 	if (counter_mode) {
 		ptr_bvh_counter = CUDAMemory::malloc<uint64_t>(aggregated_bvh_node_count);
+		if (cpu_config.separate_primary_shadow_counters) {
+			ptr_bvh_counter_shadow = CUDAMemory::malloc<uint64_t>(aggregated_bvh_node_count);
+		}
 		ptr_triangle_counter = CUDAMemory::malloc<uint64_t>(aggregated_index_count);
 		ptr_mesh_counter = CUDAMemory::malloc<uint64_t>(scene.meshes.size());
 
@@ -460,10 +466,15 @@ void Integrator::init_geometry() {
 		mesh_counter_count = scene.meshes.size();
 
 		cuda_module.get_global("bvh_counter").set_value(ptr_bvh_counter);
+		cuda_module.get_global("bvh_counter_shadow").set_value(
+			cpu_config.separate_primary_shadow_counters ? ptr_bvh_counter_shadow : ptr_bvh_counter);
 		cuda_module.get_global("triangle_counter").set_value(ptr_triangle_counter);
 		cuda_module.get_global("mesh_counter").set_value(ptr_mesh_counter);
 
 		CUDAMemory::memset_async(ptr_bvh_counter, 0, aggregated_bvh_node_count, memory_stream);
+		if (cpu_config.separate_primary_shadow_counters) {
+			CUDAMemory::memset_async(ptr_bvh_counter_shadow, 0, aggregated_bvh_node_count, memory_stream);
+		}
 		CUDAMemory::memset_async(ptr_triangle_counter, 0, aggregated_index_count, memory_stream);
 		CUDAMemory::memset_async(ptr_mesh_counter, 0, scene.meshes.size(), memory_stream);
 	}
@@ -552,6 +563,7 @@ void Integrator::free_geometry() {
 		case BVHType::BVH8: CUDAMemory::free(ptr_bvh_nodes_8); break;
 	}
 	CUDAMemory::free(ptr_bvh_counter); //jichan add
+	if (ptr_bvh_counter_shadow.ptr) CUDAMemory::free(ptr_bvh_counter_shadow);
 	CUDAMemory::free(ptr_triangle_counter);
 	CUDAMemory::free(ptr_mesh_counter);
 	if (ptr_bvh2_parent_indices.ptr) CUDAMemory::free(ptr_bvh2_parent_indices);
@@ -843,23 +855,85 @@ void Integrator::update(float delta, Allocator * frame_allocator) {
 
 void Integrator::collapseBVH() {
 	//bv2 -> bvh8
-	const Array<uint64_t> & collapse_counter_results = bvh_counter_results;
+	ASSERT(!cpu_config.separate_primary_shadow_counters ||
+		bvh_counter_results.size() == bvh_counter_shadow_results.size());
+	ASSERT(std::isfinite(cpu_config.shadow_counter_weight) && cpu_config.shadow_counter_weight >= 0.0f);
+	if (cpu_config.separate_primary_shadow_counters && bvh_counter_results.size() > 0) {
+		IO::print("Separate counter TLAS roots: primary {}, shadow {}, weight {}, mode {}.\n"_sv,
+			bvh_counter_results[0], bvh_counter_shadow_results[0], cpu_config.shadow_counter_weight,
+			cpu_config.normalize_primary_shadow_counters ? "root-normalized" : "raw-count");
+	}
+	if (cpu_config.enable_vertex_counter_rays && cpu_config.enable_vertex_counter_shadow_nee &&
+		!cpu_config.separate_primary_shadow_counters && bvh_counter_results.size() > 0) {
+		IO::print("Unified vertex P+S TLAS root: {}.\n"_sv, bvh_counter_results[0]);
+	}
+
+	// Encode a normalized primary/shadow mixture back into a high-precision
+	// integer counter distribution. Each TLAS/BLAS must use its own roots:
+	//   q_i = (P_i/P_root + w*S_i/S_root) / (1+w)
+	// Missing components are omitted from the denominator so the local root
+	// remains exactly one. The converter can then keep using node/root (DP) or
+	// child/parent (Wald) ratios without knowing about the two source buffers.
+	constexpr uint64_t normalized_counter_scale = 1ull << 52;
+	auto make_local_counter = [&](size_t base, size_t count) {
+		Array<uint64_t> local_counter(count);
+		if (!(counterCollapse || guRDTC)) return local_counter;
+
+		ASSERT(base + count <= bvh_counter_results.size());
+		if (!cpu_config.separate_primary_shadow_counters) {
+			for (size_t n = 0; n < count; n++) local_counter[n] = bvh_counter_results[base + n];
+			return local_counter;
+		}
+
+		ASSERT(base + count <= bvh_counter_shadow_results.size());
+		if (!cpu_config.normalize_primary_shadow_counters) {
+			const long double shadow_weight = cpu_config.shadow_counter_weight;
+			const long double maximum_counter = std::numeric_limits<uint64_t>::max();
+			for (size_t n = 0; n < count; n++) {
+				const long double combined_counter =
+					static_cast<long double>(bvh_counter_results[base + n]) +
+					shadow_weight * static_cast<long double>(bvh_counter_shadow_results[base + n]);
+				local_counter[n] = combined_counter >= maximum_counter
+					? std::numeric_limits<uint64_t>::max()
+					: static_cast<uint64_t>(std::floor(combined_counter + 0.5L));
+			}
+			return local_counter;
+		}
+
+		const uint64_t primary_root = bvh_counter_results[base];
+		const uint64_t shadow_root = bvh_counter_shadow_results[base];
+		const double primary_mix_weight = primary_root > 0 ? 1.0 : 0.0;
+		const double shadow_mix_weight = shadow_root > 0 ? double(cpu_config.shadow_counter_weight) : 0.0;
+		const double mix_weight_sum = primary_mix_weight + shadow_mix_weight;
+		if (mix_weight_sum == 0.0) return local_counter;
+
+		for (size_t n = 0; n < count; n++) {
+			const double primary_probability = primary_root > 0
+				? Math::min(double(bvh_counter_results[base + n]) / double(primary_root), 1.0)
+				: 0.0;
+			const double shadow_probability = shadow_root > 0
+				? Math::min(double(bvh_counter_shadow_results[base + n]) / double(shadow_root), 1.0)
+				: 0.0;
+			const double mixture_probability =
+				(primary_mix_weight * primary_probability + shadow_mix_weight * shadow_probability) / mix_weight_sum;
+			ASSERT(std::isfinite(mixture_probability));
+			local_counter[n] = static_cast<uint64_t>(std::floor(
+				mixture_probability * double(normalized_counter_scale) + 0.5));
+		}
+		return local_counter;
+	};
+
 	size_t mesh_data_count = scene.asset_manager.mesh_datas.size();
 	for (size_t i = 0; i < mesh_data_count; i++) {
 		BVH2& oldBvh = *static_cast<BVH2*>(scene.asset_manager.mesh_datas[i].bvh.get());
 		const size_t base = mesh_data_bvh_offsets[i];
-		Array<uint64_t> local_counter(oldBvh.nodes.size());
-		if (counterCollapse || guRDTC) {
-			ASSERT(base + oldBvh.nodes.size() <= collapse_counter_results.size());
-			for (size_t n = 0; n < oldBvh.nodes.size(); n++) {
-				local_counter[n] = collapse_counter_results[base + n];
-			}
-		}
+		Array<uint64_t> local_counter = make_local_counter(base, oldBvh.nodes.size());
 		OwnPtr<BVH8> newBvh = make_owned<BVH8>();
 		BVH8Converter converter(*newBvh.get(), oldBvh);
 		//조건에 따라 converter 조건 결정
 		converter.counterCollapse = counterCollapse;
 		converter.counterCostLambda = cpu_config.counter_cost_lambda;
+		converter.counterCostMode = cpu_config.counter_cost_mode;
 		converter.counterCollapseMaxDepth = cpu_config.counter_collapse_max_depth;
 		converter.legacyCounterPrimitiveCost = cpu_config.legacy_counter_primitive_cost;
 		converter.guRDTC = guRDTC;
@@ -876,18 +950,13 @@ void Integrator::collapseBVH() {
 	}
 
 	const BVH2& oldTlas = *static_cast<BVH2*>(tlas.get());
-	Array<uint64_t> local_counter(oldTlas.nodes.size());
-	if (counterCollapse || guRDTC) {
-		ASSERT(oldTlas.nodes.size() <= collapse_counter_results.size());
-		for (size_t n = 0; n < oldTlas.nodes.size(); n++) {
-			local_counter[n] = collapse_counter_results[n];
-		}
-	}
+	Array<uint64_t> local_counter = make_local_counter(0, oldTlas.nodes.size());
 	OwnPtr<BVH8> newTlas = make_owned<BVH8>();
 	
 	BVH8Converter converter(*newTlas.get(), oldTlas);
 	converter.counterCollapse = counterCollapse;
 	converter.counterCostLambda = cpu_config.counter_cost_lambda;
+	converter.counterCostMode = cpu_config.counter_cost_mode;
 	converter.counterCollapseMaxDepth = cpu_config.counter_collapse_max_depth;
 	converter.legacyCounterPrimitiveCost = cpu_config.legacy_counter_primitive_cost;
 	converter.guRDTC = guRDTC;

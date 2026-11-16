@@ -177,6 +177,7 @@ struct Integrator {
 	CUDAMemory::Ptr<BVHNode8>  ptr_bvh_nodes_8;
 	//jichan add
 	CUDAMemory::Ptr<uint64_t>  ptr_bvh_counter;
+	CUDAMemory::Ptr<uint64_t>  ptr_bvh_counter_shadow;
 	CUDAMemory::Ptr<uint64_t> ptr_triangle_counter;
 	CUDAMemory::Ptr<uint64_t> ptr_mesh_counter;
 	CUDAMemory::Ptr<int>      ptr_bvh2_parent_indices;
@@ -187,6 +188,7 @@ struct Integrator {
 	CUDAMemory::Ptr<bool> ptr_counter_mode;
 	CUDAMemory::Ptr<bool> ptr_closest_hit_path_counter_mode;
 	Array<uint64_t> bvh_counter_results;
+	Array<uint64_t> bvh_counter_shadow_results;
 	Array<uint64_t> triangle_counter_results;
 	Array<uint64_t> mesh_counter_results;
 

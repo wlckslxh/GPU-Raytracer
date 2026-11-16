@@ -126,6 +126,7 @@ __device__ __constant__ unsigned long long * bounce_ray_counts;
 // Counter-only paths use the regular traversal, sorting and BSDF machinery,
 // but carry a synthetic path id instead of a framebuffer pixel index.
 __device__ __constant__ bool counter_only_mode;
+__device__ __constant__ bool vertex_counter_shadow_nee;
 
 struct VertexCounterSeed {
 	float3 position;
@@ -213,6 +214,7 @@ extern "C" __global__ void kernel_trace_bvh8(int bounce) {
 
 extern "C" __global__ void kernel_trace_shadow_bvh2(int bounce) {
 	bvh2_trace_shadow(&ray_buffer_shadow.traversal_data, buffer_sizes.shadow[bounce], &buffer_sizes.rays_retired_shadow[bounce], [bounce](int ray_index) {
+		if (counter_only_mode) return;
 		float4 illumination_and_pixel_index = ray_buffer_shadow.illumination_and_pixel_index[ray_index];
 		float3 illumination = make_float3(illumination_and_pixel_index);
 		int    pixel_index  = __float_as_int(illumination_and_pixel_index.w);
@@ -228,6 +230,7 @@ extern "C" __global__ void kernel_trace_shadow_bvh2(int bounce) {
 
 extern "C" __global__ void kernel_trace_shadow_bvh4(int bounce) {
 	bvh4_trace_shadow(&ray_buffer_shadow.traversal_data, buffer_sizes.shadow[bounce], &buffer_sizes.rays_retired_shadow[bounce], [bounce](int ray_index) {
+		if (counter_only_mode) return;
 		float4 illumination_and_pixel_index = ray_buffer_shadow.illumination_and_pixel_index[ray_index];
 		float3 illumination = make_float3(illumination_and_pixel_index);
 		int    pixel_index  = __float_as_int(illumination_and_pixel_index.w);
@@ -243,6 +246,7 @@ extern "C" __global__ void kernel_trace_shadow_bvh4(int bounce) {
 
 extern "C" __global__ void kernel_trace_shadow_bvh8(int bounce) {
 	bvh8_trace_shadow(&ray_buffer_shadow.traversal_data, buffer_sizes.shadow[bounce], &buffer_sizes.rays_retired_shadow[bounce], [bounce](int ray_index) {
+		if (counter_only_mode) return;
 		float4 illumination_and_pixel_index = ray_buffer_shadow.illumination_and_pixel_index[ray_index];
 		float3 illumination = make_float3(illumination_and_pixel_index);
 		int    pixel_index  = __float_as_int(illumination_and_pixel_index.w);
@@ -940,7 +944,7 @@ __device__ void shade_material(int bounce, int sample_index, int buffer_size) {
 	}
 
 	// Next Event Estimation
-	if (!counter_only_mode && config.enable_next_event_estimation && bsdf.allow_nee()) {
+	if ((!counter_only_mode || vertex_counter_shadow_nee) && config.enable_next_event_estimation && bsdf.allow_nee()) {
 		if (lights_total_weight > 0.0f) {
 			next_event_estimation(pixel_index, bounce, sample_index, bsdf, medium_id, hit_point, normal, geometric_normal, throughput);
 		}

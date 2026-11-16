@@ -388,3 +388,6 @@ perf.txt
 *.nsys-rep
 *.sqlite
 *.png
+*.xlsx
+*.tsv
+*.md

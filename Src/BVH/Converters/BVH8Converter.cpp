@@ -45,6 +45,26 @@ float BVH8Converter::counter_visit_cost(int node_index) const {
 	return float(cost);
 }
 
+float BVH8Converter::combine_counter_cost(int node_index, float surface_cost, bool use_counter) const {
+	if (!use_counter) return surface_cost;
+
+	const float measured_cost = counterCostLambda * counter_visit_cost(node_index);
+	switch (counterCostMode) {
+		case CounterCostMode::ADDITIVE:
+			return surface_cost + measured_cost;
+		case CounterCostMode::COUNTER_ONLY:
+			// A zero node count means the sampled paths provide no distribution
+			// inside this entire subtree. Preserve a valid geometry-driven layout
+			// there instead of letting a table of zero costs pick arbitrary ties.
+			return counter[node_index] > 0 ? measured_cost : surface_cost;
+		case CounterCostMode::MAXIMUM:
+			return Math::max(surface_cost, measured_cost);
+		default:
+			ASSERT_UNREACHABLE();
+			return surface_cost;
+	}
+}
+
 bool BVH8Converter::counter_enabled_at_depth(int depth) const {
 	return counterCollapse && (counterCollapseMaxDepth < 0 || depth < counterCollapseMaxDepth);
 }
@@ -100,13 +120,7 @@ int BVH8Converter::calculate_cost(int node_index, const Array<BVHNode2> & nodes,
 		}
 
 		// SAH cost
-		float cost_leaf;
-		if (use_counter) {
-			cost_leaf = node.aabb.surface_area() + counterCostLambda * counter_visit_cost(node_index);
-		}
-		else {
-			cost_leaf = node.aabb.surface_area() * float(num_primitives);
-		}
+		const float cost_leaf = combine_counter_cost(node_index, node.aabb.surface_area(), use_counter);
 
 		for (int i = 0; i < 7; i++) {
 			decisions[node_index * 7 + i].type = Decision::Type::LEAF;
@@ -119,16 +133,10 @@ int BVH8Converter::calculate_cost(int node_index, const Array<BVHNode2> & nodes,
 
 		// Separate case: i=0 (i=1 in the paper)
 		{
-			float cost_leaf;
-			if (use_counter) {
-				const float primitive_factor = legacyCounterPrimitiveCost ? 1.0f : float(num_primitives);
-				cost_leaf = num_primitives <= 3
-					? primitive_factor * (node.aabb.surface_area() + counterCostLambda * counter_visit_cost(node_index))
-					: std::numeric_limits<float>::infinity();
-			}
-			else {
-				cost_leaf = num_primitives <= 3 ? float(num_primitives) * node.aabb.surface_area() : std::numeric_limits<float>::infinity();
-			}
+			const float primitive_factor = use_counter && legacyCounterPrimitiveCost ? 1.0f : float(num_primitives);
+			const float cost_leaf = num_primitives <= 3
+				? primitive_factor * combine_counter_cost(node_index, node.aabb.surface_area(), use_counter)
+				: std::numeric_limits<float>::infinity();
 
 			float cost_distribute = std::numeric_limits<float>::infinity();
 
@@ -148,10 +156,8 @@ int BVH8Converter::calculate_cost(int node_index, const Array<BVHNode2> & nodes,
 				}
 			}
 
-			float cost_internal = cost_distribute + node.aabb.surface_area();
-			if (use_counter) {
-				cost_internal += counterCostLambda * counter_visit_cost(node_index);
-			}
+			const float cost_internal = cost_distribute +
+				combine_counter_cost(node_index, node.aabb.surface_area(), use_counter);
 
 			if (cost_leaf < cost_internal) {
 				decisions[node_index * 7].type = Decision::Type::LEAF;
@@ -237,6 +243,7 @@ void BVH8Converter::get_children_greedy(int node_index, const Array<BVHNode2> & 
 	while (child_count < 8) {
 		int largest_index = INVALID;
 		float largest_area = -1.0f;
+		float largest_surface_share = -1.0f;
 		for (int i = 0; i < child_count; i++) {
 			const BVHNode2 & child = nodes[children[i]];
 			if (child.is_leaf()) continue;
@@ -265,12 +272,38 @@ void BVH8Converter::get_children_greedy(int node_index, const Array<BVHNode2> & 
 				// loses the intended sibling ratio, and an unvisited subtree makes
 				// the original 0 / 0 expression terminate the CPU process.
 				const uint64_t parent_counter = counter[node_index];
+				const uint64_t child_counter = counter[children[i]];
 				const float traversal_share = parent_counter > 0
-					? static_cast<float>(counter[children[i]]) / static_cast<float>(parent_counter)
+					? static_cast<float>(child_counter) / static_cast<float>(parent_counter)
 					: 0.0f;
-				const float heuristic = surface_share + counterCostLambda * traversal_share;
-				if (largest_index == INVALID || heuristic > largest_area) {
+				float heuristic;
+				switch (counterCostMode) {
+					case CounterCostMode::ADDITIVE:
+						heuristic = surface_share + counterCostLambda * traversal_share;
+						break;
+					case CounterCostMode::COUNTER_ONLY:
+						// An unobserved candidate has no reliable counter-only estimate.
+						// Use SA for that candidate (and for an entirely unobserved parent)
+						// instead of making missing data look like a zero-cost subtree.
+						heuristic = parent_counter > 0 && child_counter > 0
+							? counterCostLambda * traversal_share
+							: surface_share;
+						break;
+					case CounterCostMode::MAXIMUM:
+						heuristic = parent_counter > 0
+							? Math::max(surface_share, counterCostLambda * traversal_share)
+							: surface_share;
+						break;
+					default:
+						ASSERT_UNREACHABLE();
+						heuristic = surface_share;
+				}
+				const bool counter_only_tie = counterCostMode == CounterCostMode::COUNTER_ONLY &&
+					parent_counter > 0 && child_counter > 0 &&
+					heuristic == largest_area && surface_share > largest_surface_share;
+				if (largest_index == INVALID || heuristic > largest_area || counter_only_tie) {
 					largest_area = heuristic;
+					largest_surface_share = surface_share;
 					largest_index = i;
 				}
 			}

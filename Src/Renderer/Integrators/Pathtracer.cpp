@@ -1,8 +1,10 @@
 #include "Pathtracer.h"
 
+#include <array>
 #include <cstdint>
 #include <cstring>
-#include <unordered_set>
+#include <unordered_map>
+#include <vector>
 
 #include <cmath>
 #include <cstdio>
@@ -41,32 +43,11 @@ void Pathtracer::write_experiment_fps_csv() const {
 		return;
 	}
 
-	// Keep this schema separate from the earlier one-off FPS export, which did
-	// not contain source_bvh and therefore cannot safely receive these rows.
-	std::string filename_stem = std::string(scene_name) + "_bvh2_to_bvh8_";
-	if (guRDTC) {
-		filename_stem += "gu_rdtc_t" + std::to_string(guRDTCThreshold) + "_";
-	} else {
-		filename_stem += "sweep_";
-	}
-	filename_stem += "b" + std::to_string(cpu_config.counter_collection_bounces) +
-		"_r" + std::to_string(cpu_config.measurement_bounces);
-	filename_stem += cpu_config.disable_russian_roulette_during_counter_collection
-		? "_counter_rr_off" : "_counter_rr_on";
-	filename_stem += cpu_config.enable_closest_hit_path_counter
-		? "_counter_path_closest" : "_counter_path_visit";
-	if (cpu_config.enable_vertex_counter_rays) {
-		filename_stem += "_counter_vertex_rpv" + std::to_string(cpu_config.counter_rays_per_vertex);
-	} else {
-		filename_stem += "_counter_pixel";
-	}
 	// Preserve the existing 1-SPP experiment files. Multi-sample frames use a
 	// separate schema and filename so their timing rows cannot be mixed with
 	// the historical 1-SPP measurements.
 	const bool multi_sample_frame = cpu_config.rays_per_pixel_per_frame != 1;
-	if (multi_sample_frame) {
-		filename_stem += "_spp" + std::to_string(cpu_config.rays_per_pixel_per_frame);
-	}
+	std::string filename_stem = scene_name;
 	if (!cpu_config.experiment_tag.is_empty()) {
 		std::string sanitized_tag = cpu_config.experiment_tag.c_str();
 		for (char & character : sanitized_tag) {
@@ -78,6 +59,36 @@ void Pathtracer::write_experiment_fps_csv() const {
 			if (!valid) character = '_';
 		}
 		filename_stem += "_exp-" + sanitized_tag;
+		// 1-SPP and multi-sample rows have different schemas. Keep only this
+		// schema marker in the filename; the exact SPP remains in the CSV row.
+		if (multi_sample_frame) filename_stem += "_ms";
+	} else {
+		// Untagged legacy runs still use a condition-specific filename. Tagged
+		// experiment files keep those values only in their CSV rows and use the
+		// tag solely for information that is not represented by the schema.
+		filename_stem += "_bvh2_to_bvh8_";
+		if (guRDTC) {
+			filename_stem += "gu_rdtc_t" + std::to_string(guRDTCThreshold) + "_";
+		} else {
+			filename_stem += "sweep_";
+		}
+		filename_stem += "b" + std::to_string(cpu_config.counter_collection_bounces) +
+			"_r" + std::to_string(cpu_config.measurement_bounces);
+		filename_stem += cpu_config.disable_russian_roulette_during_counter_collection
+			? "_counter_rr_off" : "_counter_rr_on";
+		filename_stem += cpu_config.enable_closest_hit_path_counter
+			? "_counter_path_closest" : "_counter_path_visit";
+		if (cpu_config.enable_vertex_counter_rays) {
+			filename_stem += "_counter_vertex_rpv" + std::to_string(cpu_config.counter_rays_per_vertex);
+			if (cpu_config.vertex_counter_area_weight > 0.0f) {
+				filename_stem += "_area" + std::to_string(cpu_config.vertex_counter_area_weight);
+			}
+		} else {
+			filename_stem += "_counter_pixel";
+		}
+		if (multi_sample_frame) {
+			filename_stem += "_spp" + std::to_string(cpu_config.rays_per_pixel_per_frame);
+		}
 	}
 	filename_stem += ".csv";
 	const std::filesystem::path filename = directory / filename_stem;
@@ -178,7 +189,9 @@ void Pathtracer::write_bounce_ray_counts_csv() const {
 		: cpu_config.rays_per_pixel_per_frame;
 	const std::filesystem::path filename = directory /
 		(scene_stem + "_bvh2_" + source_bvh + "_b" + std::to_string(cpu_config.counter_collection_bounces) +
-			"_" + counter_source + "_rps" + std::to_string(rays_per_source) + ".csv");
+			"_" + counter_source + "_rps" + std::to_string(rays_per_source) +
+			(cpu_config.enable_vertex_counter_rays && cpu_config.vertex_counter_area_weight > 0.0f
+				? "_area" + std::to_string(cpu_config.vertex_counter_area_weight) : "") + ".csv");
 	FILE * file = nullptr;
 #ifdef _WIN32
 	fopen_s(&file, filename.string().c_str(), "wb");
@@ -234,18 +247,25 @@ void Pathtracer::init_vertex_counter_seeds() {
 		Vector3 position;
 		Vector3 normal;
 	};
+	struct MeshVertexData {
+		std::vector<LocalVertex> vertices;
+		std::vector<std::array<uint32_t, 3>> triangle_vertex_indices;
+	};
 
-	std::vector<std::vector<LocalVertex>> unique_vertices(scene.asset_manager.mesh_datas.size());
+	std::vector<MeshVertexData> mesh_vertex_data(scene.asset_manager.mesh_datas.size());
 	for (size_t mesh_data_index = 0; mesh_data_index < scene.asset_manager.mesh_datas.size(); ++mesh_data_index) {
 		const MeshData & mesh_data = scene.asset_manager.mesh_datas[mesh_data_index];
-		auto & vertices = unique_vertices[mesh_data_index];
-		std::unordered_set<VertexKey, VertexKeyHash> seen;
-		seen.reserve(mesh_data.triangles.size() * 3);
+		auto & data = mesh_vertex_data[mesh_data_index];
+		auto & vertices = data.vertices;
+		std::unordered_map<VertexKey, uint32_t, VertexKeyHash> vertex_indices;
+		vertex_indices.reserve(mesh_data.triangles.size() * 3);
 		vertices.reserve(mesh_data.triangles.size() * 3);
+		data.triangle_vertex_indices.reserve(mesh_data.triangles.size());
 
 		for (const Triangle & triangle : mesh_data.triangles) {
 			const Vector3 positions[3] = { triangle.position_0, triangle.position_1, triangle.position_2 };
 			const Vector3 normals[3] = { triangle.normal_0, triangle.normal_1, triangle.normal_2 };
+			std::array<uint32_t, 3> triangle_indices = { };
 			for (int corner = 0; corner < 3; ++corner) {
 				VertexKey key = { };
 				memcpy(&key.bits[0], &positions[corner].x, sizeof(float));
@@ -254,16 +274,44 @@ void Pathtracer::init_vertex_counter_seeds() {
 				memcpy(&key.bits[3], &normals[corner].x, sizeof(float));
 				memcpy(&key.bits[4], &normals[corner].y, sizeof(float));
 				memcpy(&key.bits[5], &normals[corner].z, sizeof(float));
-				if (seen.insert(key).second) vertices.push_back({ positions[corner], normals[corner] });
+				auto found = vertex_indices.find(key);
+				if (found == vertex_indices.end()) {
+					const uint32_t index = static_cast<uint32_t>(vertices.size());
+					vertex_indices.emplace(key, index);
+					vertices.push_back({ positions[corner], normals[corner] });
+					triangle_indices[size_t(corner)] = index;
+				} else {
+					triangle_indices[size_t(corner)] = found->second;
+				}
 			}
+			data.triangle_vertex_indices.push_back(triangle_indices);
 		}
 	}
 
 	std::vector<VertexCounterSeed> seeds;
+	std::vector<double> representative_areas;
 	for (const Mesh & mesh : scene.meshes) {
-		const auto & vertices = unique_vertices[size_t(mesh.mesh_data_handle.handle)];
+		const size_t mesh_data_index = size_t(mesh.mesh_data_handle.handle);
+		const MeshData & source_mesh = scene.asset_manager.mesh_datas[mesh_data_index];
+		const MeshVertexData & data = mesh_vertex_data[mesh_data_index];
+		const auto & vertices = data.vertices;
+		std::vector<double> vertex_areas(vertices.size(), 0.0);
+		for (size_t triangle_index = 0; triangle_index < source_mesh.triangles.size(); ++triangle_index) {
+			const Triangle & triangle = source_mesh.triangles[triangle_index];
+			const Vector3 p0 = Matrix4::transform_position(mesh.transform, triangle.position_0);
+			const Vector3 p1 = Matrix4::transform_position(mesh.transform, triangle.position_1);
+			const Vector3 p2 = Matrix4::transform_position(mesh.transform, triangle.position_2);
+			const double area = 0.5 * double(Vector3::length(Vector3::cross(p1 - p0, p2 - p0)));
+			if (!std::isfinite(area) || area <= 0.0) continue;
+			const double corner_area = area / 3.0;
+			const std::array<uint32_t, 3> & indices = data.triangle_vertex_indices[triangle_index];
+			for (uint32_t index : indices) vertex_areas[index] += corner_area;
+		}
+
 		seeds.reserve(seeds.size() + vertices.size());
-		for (const LocalVertex & vertex : vertices) {
+		representative_areas.reserve(representative_areas.size() + vertices.size());
+		for (size_t vertex_index = 0; vertex_index < vertices.size(); ++vertex_index) {
+			const LocalVertex & vertex = vertices[vertex_index];
 			Vector3 position = Matrix4::transform_position(mesh.transform, vertex.position);
 			Vector3 normal = Matrix4::transform_direction(mesh.transform, vertex.normal);
 			const float normal_length_squared = Vector3::length_squared(normal);
@@ -273,6 +321,7 @@ void Pathtracer::init_vertex_counter_seeds() {
 				{ position.x, position.y, position.z },
 				{ normal.x, normal.y, normal.z }
 			});
+			representative_areas.push_back(vertex_areas[vertex_index]);
 		}
 	}
 
@@ -280,12 +329,54 @@ void Pathtracer::init_vertex_counter_seeds() {
 		IO::print("WARNING: Vertex counter-ray mode found no usable scene vertices.\n"_sv);
 		return;
 	}
+	ASSERT(seeds.size() == representative_areas.size());
+
+	const size_t uniform_seed_count = seeds.size();
+	const float area_weight = cpu_config.vertex_counter_area_weight;
+	double total_representative_area = 0.0;
+	for (double area : representative_areas) total_representative_area += area;
+	if (area_weight > 0.0f && total_representative_area > 0.0 && std::isfinite(total_representative_area)) {
+		// Deterministic systematic resampling preserves the historical seed count,
+		// hence exactly the same total initial-ray budget. Repeated selected seeds
+		// still receive independent directions because their path indices differ.
+		std::vector<VertexCounterSeed> resampled_seeds;
+		resampled_seeds.reserve(uniform_seed_count);
+		std::vector<uint8_t> selected(uniform_seed_count, uint8_t(0));
+		const double alpha = double(area_weight);
+		const double uniform_probability = (1.0 - alpha) / double(uniform_seed_count);
+		auto probability = [&](size_t index) {
+			return uniform_probability + alpha * representative_areas[index] / total_representative_area;
+		};
+
+		size_t source_index = 0;
+		double cumulative_probability = probability(0);
+		for (size_t output_index = 0; output_index < uniform_seed_count; ++output_index) {
+			const double target = (double(output_index) + 0.5) / double(uniform_seed_count);
+			while (target > cumulative_probability && source_index + 1 < uniform_seed_count) {
+				++source_index;
+				cumulative_probability += probability(source_index);
+			}
+			resampled_seeds.push_back(seeds[source_index]);
+			selected[source_index] = uint8_t(1);
+		}
+
+		size_t selected_unique_count = 0;
+		for (uint8_t was_selected : selected) selected_unique_count += was_selected != 0;
+		seeds.swap(resampled_seeds);
+		IO::print("Area-weighted vertex seeds: alpha {}, {} selected unique seeds from {} candidates; total representative area {}.\n"_sv,
+			area_weight, selected_unique_count, uniform_seed_count, float(total_representative_area));
+	} else if (area_weight > 0.0f) {
+		IO::print("WARNING: Vertex representative area is zero or invalid; preserving uniform vertex sampling.\n"_sv);
+	}
 
 	ptr_vertex_counter_seeds = CUDAMemory::malloc(seeds.data(), seeds.size());
 	vertex_counter_seed_count = seeds.size();
 	global_vertex_counter_seeds.set_value(ptr_vertex_counter_seeds);
-	IO::print("Vertex counter-ray seeds: {} unique position/normal pairs across scene instances ({} rays per seed).\n"_sv,
-		vertex_counter_seed_count, cpu_config.counter_rays_per_vertex);
+	IO::print("Vertex counter-ray seeds: {} entries from {} unique position/normal pairs across scene instances ({} rays per entry, area alpha {}).\n"_sv,
+		vertex_counter_seed_count, uniform_seed_count, cpu_config.counter_rays_per_vertex, area_weight);
+	IO::print("Vertex counter shadow NEE: {} ({} counter storage).\n"_sv,
+		(cpu_config.enable_vertex_counter_shadow_nee || cpu_config.separate_primary_shadow_counters) ? "enabled" : "disabled",
+		cpu_config.separate_primary_shadow_counters ? "separate primary/shadow" : "unified");
 }
 
 void Pathtracer::cuda_init(unsigned frame_buffer_handle, int screen_width, int screen_height) {
@@ -293,6 +384,9 @@ void Pathtracer::cuda_init(unsigned frame_buffer_handle, int screen_width, int s
 	init_globals();
 	global_counter_only_mode = cuda_module.get_global("counter_only_mode");
 	global_counter_only_mode.set_value(false);
+	global_vertex_counter_shadow_nee = cuda_module.get_global("vertex_counter_shadow_nee");
+	global_vertex_counter_shadow_nee.set_value(
+		cpu_config.enable_vertex_counter_shadow_nee || cpu_config.separate_primary_shadow_counters);
 
 	pinned_buffer_sizes = CUDAMemory::malloc_pinned<BufferSizes>();
 	pinned_buffer_sizes->reset(BATCH_SIZE);
@@ -1165,6 +1259,11 @@ void Pathtracer::render_vertex_counter_paths(int path_sample_index, int batch_si
 			if (scene.has_pbr_metallic_roughness) kernel_material_pbr_metallic_roughness.execute(bounce, path_sample_index);
 			if (scene.has_dielectric) kernel_material_dielectric.execute(bounce, path_sample_index);
 			if (scene.has_conductor) kernel_material_conductor.execute(bounce, path_sample_index);
+
+			if ((cpu_config.enable_vertex_counter_shadow_nee || cpu_config.separate_primary_shadow_counters) &&
+				scene.has_lights && gpu_config.enable_next_event_estimation) {
+				kernel_trace_shadow->execute(bounce);
+			}
 		}
 	}
 
@@ -1206,7 +1305,7 @@ void Pathtracer::render() {
 		vertex_counter_seed_count > 0;
 	if (vertex_counter_pass) {
 		const int vertex_batch_size = Math::min(
-			BATCH_SIZE,
+			shadow_limited_batch_size,
 			int(vertex_counter_seed_count * size_t(cpu_config.counter_rays_per_vertex)));
 		// Couple vertex-counter sampling directly to the completed counter-frame
 		// count. The normal renderer sample index can be reset by camera or GPU
@@ -1222,9 +1321,13 @@ void Pathtracer::render() {
 				experiment_finished = true;
 			} else {
 				bvh_counter_results.resize(bvh_counter_count);
+				if (cpu_config.separate_primary_shadow_counters) bvh_counter_shadow_results.resize(bvh_counter_count);
 				triangle_counter_results.resize(triangle_counter_count);
 				mesh_counter_results.resize(mesh_counter_count);
 				CUDAMemory::memcpy<uint64_t>(bvh_counter_results.data(), ptr_bvh_counter, bvh_counter_count);
+				if (cpu_config.separate_primary_shadow_counters) {
+					CUDAMemory::memcpy<uint64_t>(bvh_counter_shadow_results.data(), ptr_bvh_counter_shadow, bvh_counter_count);
+				}
 				CUDAMemory::memcpy<uint64_t>(triangle_counter_results.data(), ptr_triangle_counter, triangle_counter_count);
 				CUDAMemory::memcpy<uint64_t>(mesh_counter_results.data(), ptr_mesh_counter, mesh_counter_count);
 				begin_bvh8_measurement();
@@ -1332,9 +1435,13 @@ void Pathtracer::render() {
 			}
 
 			bvh_counter_results.resize(bvh_counter_count);
+			if (cpu_config.separate_primary_shadow_counters) bvh_counter_shadow_results.resize(bvh_counter_count);
 			triangle_counter_results.resize(triangle_counter_count);
 			mesh_counter_results.resize(mesh_counter_count);
 			CUDAMemory::memcpy<uint64_t>(bvh_counter_results.data(), ptr_bvh_counter, bvh_counter_count);
+			if (cpu_config.separate_primary_shadow_counters) {
+				CUDAMemory::memcpy<uint64_t>(bvh_counter_shadow_results.data(), ptr_bvh_counter_shadow, bvh_counter_count);
+			}
 			CUDAMemory::memcpy<uint64_t>(triangle_counter_results.data(), ptr_triangle_counter, triangle_counter_count);
 			CUDAMemory::memcpy<uint64_t>(mesh_counter_results.data(), ptr_mesh_counter, mesh_counter_count);
 
@@ -1411,16 +1518,21 @@ void Pathtracer::render() {
 			experiment_fps = total_frame_time_ms > 0.0
 				? float(1000.0 * double(cpu_config.fps_measurement_frames) / total_frame_time_ms)
 				: 0.0f;
+			IO::print("Experiment FPS: {} ({} frames, {} ms)\\n"_sv,
+				experiment_fps, cpu_config.fps_measurement_frames, total_frame_time_ms);
+			// Persist the authoritative FPS result before ending an Nsight
+			// cudaProfilerApi capture. With capture-range-end=stop, report shutdown
+			// may otherwise race the CPU-side CSV write that follows cuProfilerStop.
+			// This file I/O launches no CUDA work, so the captured kernel range is
+			// still exactly the measured render frames.
+			write_experiment_fps_csv();
 			// The end event synchronized above covers every kernel included in the
 			// FPS timing interval. Stop before the post-frame clear below so Nsight
-			// contains exactly the measured render frames and no later CUDA work.
+			// contains no later CUDA work.
 			if (fps_cuda_profiler_active) {
 				CUDACALL(cuProfilerStop());
 				fps_cuda_profiler_active = false;
 			}
-			IO::print("Experiment FPS: {} ({} frames, {} ms)\\n"_sv,
-				experiment_fps, cpu_config.fps_measurement_frames, total_frame_time_ms);
-			write_experiment_fps_csv();
 			experiment_state = ExperimentState::FINISHED;
 			experiment_finished = true;
 		}

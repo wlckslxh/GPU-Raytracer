@@ -221,6 +221,7 @@ struct Pathtracer final : Integrator {
 	CUDAMemory::Ptr<VertexCounterSeed> ptr_vertex_counter_seeds;
 	size_t vertex_counter_seed_count = 0;
 	CUDAModule::Global global_counter_only_mode;
+	CUDAModule::Global global_vertex_counter_shadow_nee;
 
 	CUDAModule::Global global_svgf_data;
 

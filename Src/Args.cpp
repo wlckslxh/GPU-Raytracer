@@ -75,6 +75,10 @@ static void parse_args(const Array<StringView> & args, Allocator * allocator) {
 	options.emplace_back("b"_sv, "bounce"_sv,  "Sets the number of pathtracing bounces"_sv,                1, [](const Array<StringView> & args, size_t i) { gpu_config.num_bounces         = Math::clamp(parse_arg_int(args[i + 1]), 0, MAX_BOUNCES - 1); });
 	options.emplace_back("N"_sv, "samples"_sv, "Sets a target number of samples to use"_sv,                1, [](const Array<StringView> & args, size_t i) { cpu_config.output_sample_index = parse_arg_int(args[i + 1]); });
 	options.emplace_back("o"_sv, "output"_sv,  "Sets path to output file. Supported formats: ppm, exr"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.output_filename     = args[i + 1]; });
+	options.emplace_back(StringView { }, "camera-keyframe-sample"_sv, "Selects a one-based sample and sample count along camera_keyframes for an ordinary render"_sv, 2, [](const Array<StringView> & args, size_t i) {
+		cpu_config.camera_keyframe_sample_index = parse_arg_int(args[i + 1]) - 1;
+		cpu_config.camera_keyframe_sample_count = parse_arg_int(args[i + 2]);
+	});
 	options.emplace_back(StringView { }, "counter-camera-view"_sv, "Selects a one-based counter camera view for an ordinary render"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.counter_camera_view_index = parse_arg_int(args[i + 1]) - 1; });
 
 	options.emplace_back("s"_sv, "scene"_sv, "Sets path to scene file. Supported formats: scene JSON, Mitsuba XML, OBJ, PLY, glTF, GLB"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.scene_filenames.push_back(args[i + 1]); });
@@ -109,6 +113,21 @@ static void parse_args(const Array<StringView> & args, Allocator * allocator) {
 	options.emplace_back(StringView { }, "counter-collapse"_sv, "Uses traversal counters in BVH8 collapse cost evaluation"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.enable_counter_collapse = parse_arg_bool(args[i + 1]); });
 	options.emplace_back(StringView { }, "wald-collapse"_sv, "Uses the greedy Wald-style BVH8 collapse instead of the DP collapse"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.enable_wald_collapse = parse_arg_bool(args[i + 1]); });
 	options.emplace_back(StringView { }, "counter-cost-lambda"_sv, "Sets the nonnegative weight of the measured counter term in DP/Wald collapse"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.counter_cost_lambda = Math::max(parse_arg_float(args[i + 1]), 0.0f); });
+	options.emplace_back(StringView { }, "counter-cost-mode"_sv, "Combines normalized surface area and counters using additive, counter-only, or max"_sv, 1, [](const Array<StringView> & args, size_t i) {
+		if (args[i + 1] == "additive") {
+			cpu_config.counter_cost_mode = CounterCostMode::ADDITIVE;
+		} else if (args[i + 1] == "counter-only") {
+			cpu_config.counter_cost_mode = CounterCostMode::COUNTER_ONLY;
+		} else if (args[i + 1] == "max") {
+			cpu_config.counter_cost_mode = CounterCostMode::MAXIMUM;
+		} else {
+			IO::print("'{}' is not a recognized counter cost mode! Supported options: additive, counter-only, max\n"_sv, args[i + 1]);
+			IO::exit(1);
+		}
+	});
+	options.emplace_back(StringView { }, "separate-primary-shadow-counters"_sv, "Collects path-ray and shadow-ray BVH counters separately"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.separate_primary_shadow_counters = parse_arg_bool(args[i + 1]); });
+	options.emplace_back(StringView { }, "shadow-counter-weight"_sv, "Sets the nonnegative shadow weight in the normalized primary/shadow counter mixture"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.shadow_counter_weight = Math::max(parse_arg_float(args[i + 1]), 0.0f); });
+	options.emplace_back(StringView { }, "normalize-primary-shadow-counters"_sv, "Selects root-normalized primary/shadow probabilities; false reproduces P + w*S counts"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.normalize_primary_shadow_counters = parse_arg_bool(args[i + 1]); });
 	options.emplace_back(StringView { }, "counter-collapse-max-depth"_sv, "Uses counters only above this exclusive BVH2 depth; -1 enables all depths"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.counter_collapse_max_depth = Math::max(parse_arg_int(args[i + 1]), -1); });
 	options.emplace_back(StringView { }, "legacy-counter-primitive-cost"_sv, "Uses the original DP counter-collapse cost for 2- and 3-primitive leaves"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.legacy_counter_primitive_cost = parse_arg_bool(args[i + 1]); });
 	options.emplace_back(StringView { }, "gu-rdtc"_sv, "Uses Gu et al. CBTC-RD greedy BVH8 contraction"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.enable_gu_rdtc = parse_arg_bool(args[i + 1]); });
@@ -117,6 +136,8 @@ static void parse_args(const Array<StringView> & args, Allocator * allocator) {
 	options.emplace_back(StringView { }, "counter-disable-russian-roulette"_sv, "Disables Russian roulette only while collecting BVH counters"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.disable_russian_roulette_during_counter_collection = parse_arg_bool(args[i + 1]); });
 	options.emplace_back(StringView { }, "counter-vertex-rays"_sv, "Uses unique-vertex hemisphere paths instead of camera paths while collecting counters"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.enable_vertex_counter_rays = parse_arg_bool(args[i + 1]); });
 	options.emplace_back(StringView { }, "counter-rays-per-vertex"_sv, "Sets cosine-hemisphere paths emitted per unique scene vertex"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.counter_rays_per_vertex = Math::max(parse_arg_int(args[i + 1]), 1); });
+	options.emplace_back(StringView { }, "vertex-counter-shadow-nee"_sv, "Generates NEE shadow rays for synthetic vertex counter paths"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.enable_vertex_counter_shadow_nee = parse_arg_bool(args[i + 1]); });
+	options.emplace_back(StringView { }, "vertex-counter-area-weight"_sv, "Blends uniform and representative-area vertex-counter sampling in [0,1]"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.vertex_counter_area_weight = Math::clamp(parse_arg_float(args[i + 1]), 0.0f, 1.0f); });
 	options.emplace_back(StringView { }, "closest-hit-path-counter"_sv, "Uses closest-hit and shadow any-hit paths instead of all BVH visits for counter-driven collapse"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.enable_closest_hit_path_counter = parse_arg_bool(args[i + 1]); });
 	options.emplace_back(StringView { }, "measurement-bounces"_sv, "Sets pathtracing bounces used for post-conversion FPS measurement"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.measurement_bounces = Math::clamp(parse_arg_int(args[i + 1]), 0, MAX_BOUNCES - 1); });
 	options.emplace_back(StringView { }, "rays-per-pixel"_sv, "Sets complete camera paths dispatched per pixel in each Pathtracer frame"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.rays_per_pixel_per_frame = Math::max(parse_arg_int(args[i + 1]), 1); });

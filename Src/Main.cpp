@@ -112,6 +112,21 @@ int main(int num_args, char ** args) {
 
 	LinearAllocator<MEGABYTES(1)> scene_allocator;
 	Scene scene(&scene_allocator);
+	if (cpu_config.camera_keyframe_sample_index >= 0 && cpu_config.counter_camera_view_index >= 0) {
+		IO::print("Only one of --camera-keyframe-sample and --counter-camera-view may be selected.\n"_sv);
+		IO::exit(1);
+	}
+	if (cpu_config.camera_keyframe_sample_index >= 0) {
+		const int sample_index = cpu_config.camera_keyframe_sample_index;
+		const int sample_count = cpu_config.camera_keyframe_sample_count;
+		if (sample_count <= 0 || sample_index >= sample_count ||
+			!scene.set_camera_keyframe_sample(static_cast<uint64_t>(sample_index), static_cast<uint64_t>(sample_count))) {
+			IO::print("Camera keyframe sample {}/{} is invalid or the scene has no usable camera_keyframes.\n"_sv,
+				sample_index + 1, sample_count);
+			IO::exit(1);
+		}
+		IO::print("Rendering camera keyframe sample {}/{}\n"_sv, sample_index + 1, sample_count);
+	}
 	if (cpu_config.counter_camera_view_index >= 0) {
 		const size_t view_index = static_cast<size_t>(cpu_config.counter_camera_view_index);
 		if (view_index >= scene.counter_camera_views.size()) {

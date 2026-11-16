@@ -10,6 +10,7 @@ struct BVH8Converter final : BVHConverter {
 	Array<uint64_t> counter;
 	bool counterCollapse = false;
 	float counterCostLambda = 1.0f;
+	CounterCostMode counterCostMode = CounterCostMode::ADDITIVE;
 	int counterCollapseMaxDepth = -1;
 	bool legacyCounterPrimitiveCost = true;
 	// Gu et al. CBTC-RD selection: counter ratio after threshold t, SA ratio
@@ -48,6 +49,7 @@ private:
 	Array<Decision> decisions;
 	Array<int> nodeDepths;
 	float counter_visit_cost(int node_index) const;
+	float combine_counter_cost(int node_index, float surface_cost, bool use_counter) const;
 	bool counter_enabled_at_depth(int depth) const;
 	void calculate_depths(int node_index, const Array<BVHNode2> & nodes, int depth);
 

@@ -44,6 +44,7 @@ struct BVH2Node {
 __device__ __constant__ BVH2Node * bvh2_nodes;
 //jichan add
 __device__ __constant__ unsigned long long * bvh_counter;
+__device__ __constant__ unsigned long long * bvh_counter_shadow;
 __device__ __constant__ unsigned long long * triangle_counter;
 __device__ __constant__ unsigned long long * mesh_counter;
 __device__ __constant__ bool * counter_mode;
@@ -54,14 +55,14 @@ __device__ __constant__ int bvh2_parent_index_count;
 // TLAS and every BLAS are separate roots in the aggregated node array. The
 // caller invokes this once for the final TLAS leaf and once for the final
 // BLAS leaf.
-__device__ inline void bvh2_count_hit_path(int leaf_node_index) {
-	if (leaf_node_index == INVALID || !bvh_counter || !bvh2_parent_indices) return;
+__device__ inline void bvh2_count_hit_path(int leaf_node_index, unsigned long long * target_counter) {
+	if (leaf_node_index == INVALID || !target_counter || !bvh2_parent_indices) return;
 
 	for (int node_index = leaf_node_index, step = 0;
 		node_index != INVALID && step < bvh2_parent_index_count;
 		node_index = bvh2_parent_indices[node_index], ++step) {
 		if (node_index < 0 || node_index >= bvh2_parent_index_count) return;
-		atomicAdd(&bvh_counter[node_index], 1ull);
+		atomicAdd(&target_counter[node_index], 1ull);
 	}
 }
 
@@ -176,8 +177,8 @@ __device__ void bvh2_trace(TraversalData * traversal_data, int ray_count, int * 
 
 			if (stack_size == 0) {
 				if (*counter_mode && *closest_hit_path_counter_mode && closest_blas_leaf != INVALID) {
-					bvh2_count_hit_path(closest_tlas_leaf);
-					bvh2_count_hit_path(closest_blas_leaf);
+					bvh2_count_hit_path(closest_tlas_leaf, bvh_counter);
+					bvh2_count_hit_path(closest_blas_leaf, bvh_counter);
 				}
 				traversal_data->hits.set(ray_index, ray_hit);
 				break;
@@ -242,7 +243,7 @@ __device__ void bvh2_trace_shadow(ShadowTraversalData * traveral_data, int ray_c
 
 			if (node.aabb.intersects(ray, max_distance)) {
 				if (*counter_mode && !*closest_hit_path_counter_mode) {
-					atomicAdd(&bvh_counter[node_index], 1ull);
+					atomicAdd(&bvh_counter_shadow[node_index], 1ull);
 				}
 				if (node.is_leaf()) {
 					if (tlas_stack_size == INVALID) {
@@ -276,8 +277,8 @@ __device__ void bvh2_trace_shadow(ShadowTraversalData * traveral_data, int ray_c
 						}
 						if (hit) {
 							if (*counter_mode && *closest_hit_path_counter_mode) {
-								bvh2_count_hit_path(active_tlas_leaf);
-								bvh2_count_hit_path(node_index);
+								bvh2_count_hit_path(active_tlas_leaf, bvh_counter_shadow);
+								bvh2_count_hit_path(node_index, bvh_counter_shadow);
 							}
 							stack_size = 0;
 							break;
