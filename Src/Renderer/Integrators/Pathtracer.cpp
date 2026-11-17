@@ -220,6 +220,72 @@ void Pathtracer::write_bounce_ray_counts_csv() const {
 	IO::print("Wrote bounce-ray-count CSV: {}\n"_sv, filename.string().c_str());
 }
 
+void Pathtracer::write_traversal_work_diagnostics_csv() const {
+	if (!ptr_traversal_work_diagnostics.ptr) return;
+	uint64_t values[TRAVERSAL_DIAGNOSTIC_VALUE_COUNT] = { };
+	CUDAMemory::memcpy(values, ptr_traversal_work_diagnostics, TRAVERSAL_DIAGNOSTIC_VALUE_COUNT);
+
+	std::string scene_stem = "scene";
+	if (cpu_config.scene_filenames.size() > 0) {
+		const std::string candidate = std::filesystem::path(cpu_config.scene_filenames[0].data()).stem().string();
+		if (!candidate.empty()) scene_stem = candidate;
+	}
+	std::string tag = cpu_config.experiment_tag.is_empty() ? "diagnostic" : cpu_config.experiment_tag.c_str();
+	for (char & character : tag) {
+		const bool valid = (character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || character == '-' || character == '_';
+		if (!valid) character = '_';
+	}
+	const std::filesystem::path directory = "statistics/diagnostics";
+	std::error_code error;
+	std::filesystem::create_directories(directory, error);
+	if (error) {
+		std::fprintf(stderr, "WARNING: Could not create diagnostics directory: %s\n", error.message().c_str());
+		return;
+	}
+	const std::filesystem::path filename = directory / (scene_stem + "_" + tag + "_traversal_work.csv");
+	FILE * file = nullptr;
+#ifdef _WIN32
+	fopen_s(&file, filename.string().c_str(), "wb");
+#else
+	file = fopen(filename.string().c_str(), "wb");
+#endif
+	if (!file) {
+		std::fprintf(stderr, "WARNING: Could not write traversal diagnostics: %s\n", filename.string().c_str());
+		return;
+	}
+	std::fprintf(file,
+		"scene,tag,collapse_method,cost_mode,counter_source,counter_lambda,counter_depth_limit,separate_primary_shadow,normalize_primary_shadow,shadow_weight,vertex_area_weight,legacy_primitive_cost,counter_collapse,counter_frames,measured_frames,ray_type,bounce,rays,node_visits,aabb_tests,leaf_group_visits,triangle_tests,stack_pushes,blas_entries,node_visits_per_ray,aabb_tests_per_ray,leaf_groups_per_ray,triangle_tests_per_ray\n");
+	const char * collapse_method = waldCollapse ? "wald" : "ylitie";
+	const char * cost_mode = !counterCollapse ? "sa-only" :
+		(cpu_config.counter_cost_mode == CounterCostMode::COUNTER_ONLY ? "counter-only" :
+		(cpu_config.counter_cost_mode == CounterCostMode::MAXIMUM ? "max" : "additive"));
+	for (int ray_type = 0; ray_type < 2; ++ray_type) {
+		for (int bounce = 0; bounce < cpu_config.measurement_bounces; ++bounce) {
+			const uint64_t * row = values + (ray_type * MAX_BOUNCES + bounce) * TRAVERSAL_DIAGNOSTIC_METRIC_COUNT;
+			const double inv_rays = row[0] != 0 ? 1.0 / double(row[0]) : 0.0;
+			std::fprintf(file, "%s,%s,%s,%s,%s,%.9g,%d,%d,%d,%.9g,%.9g,%d,%d,%llu,%llu,%s,%d,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.9f,%.9f,%.9f,%.9f\n",
+				scene_stem.c_str(), tag.c_str(), collapse_method, cost_mode,
+				!counterCollapse ? "none" : (cpu_config.enable_vertex_counter_rays ? "vertex" : "pixel"),
+				double(cpu_config.counter_cost_lambda), cpu_config.counter_collapse_max_depth,
+				cpu_config.separate_primary_shadow_counters ? 1 : 0,
+				cpu_config.normalize_primary_shadow_counters ? 1 : 0, double(cpu_config.shadow_counter_weight),
+				double(cpu_config.vertex_counter_area_weight), cpu_config.legacy_counter_primitive_cost ? 1 : 0,
+				counterCollapse ? 1 : 0,
+				static_cast<unsigned long long>(counterCollapse ? cpu_config.counter_collection_frames : 0),
+				static_cast<unsigned long long>(cpu_config.fps_measurement_frames), ray_type == 0 ? "path" : "shadow", bounce,
+				static_cast<unsigned long long>(row[0]), static_cast<unsigned long long>(row[1]),
+				static_cast<unsigned long long>(row[2]), static_cast<unsigned long long>(row[3]),
+				static_cast<unsigned long long>(row[4]), static_cast<unsigned long long>(row[5]),
+				static_cast<unsigned long long>(row[6]), double(row[1]) * inv_rays, double(row[2]) * inv_rays,
+				double(row[3]) * inv_rays, double(row[4]) * inv_rays);
+		}
+	}
+	std::fclose(file);
+	IO::print("Wrote traversal-work diagnostics CSV: {}\n"_sv, filename.string().c_str());
+}
+
 void Pathtracer::init_vertex_counter_seeds() {
 	auto global_vertex_counter_seeds = cuda_module.get_global("vertex_counter_seeds");
 	global_vertex_counter_seeds.set_value(CUDAMemory::Ptr<VertexCounterSeed> { });
@@ -400,6 +466,13 @@ void Pathtracer::cuda_init(unsigned frame_buffer_handle, int screen_width, int s
 	} else {
 		cuda_module.get_global("bounce_ray_counts").set_value(CUDAMemory::Ptr<uint64_t> { });
 	}
+	if (cpu_config.enable_traversal_work_diagnostics) {
+		ptr_traversal_work_diagnostics = CUDAMemory::malloc<uint64_t>(TRAVERSAL_DIAGNOSTIC_VALUE_COUNT);
+		CUDAMemory::memset_async(ptr_traversal_work_diagnostics, 0, TRAVERSAL_DIAGNOSTIC_VALUE_COUNT, memory_stream);
+		cuda_module.get_global("traversal_work_diagnostics").set_value(ptr_traversal_work_diagnostics);
+	} else {
+		cuda_module.get_global("traversal_work_diagnostics").set_value(CUDAMemory::Ptr<uint64_t> { });
+	}
 
 	resize_init(frame_buffer_handle, screen_width, screen_height);
 
@@ -443,6 +516,7 @@ void Pathtracer::cuda_free() {
 
 	CUDAMemory::free_pinned(pinned_buffer_sizes);
 	if (ptr_bounce_ray_counts.ptr) CUDAMemory::free(ptr_bounce_ray_counts);
+	if (ptr_traversal_work_diagnostics.ptr) CUDAMemory::free(ptr_traversal_work_diagnostics);
 	if (ptr_vertex_counter_seeds.ptr) CUDAMemory::free(ptr_vertex_counter_seeds);
 
 	if (ptr_light_triangle_indices.ptr) CUDAMemory::free(ptr_light_triangle_indices);
@@ -518,6 +592,7 @@ void Pathtracer::init_module() {
 	kernel_trace_bvh2          .init(&cuda_module, "kernel_trace_bvh2");
 	kernel_trace_bvh4          .init(&cuda_module, "kernel_trace_bvh4");
 	kernel_trace_bvh8          .init(&cuda_module, "kernel_trace_bvh8");
+	kernel_trace_bvh8_diagnostics.init(&cuda_module, "kernel_trace_bvh8_diagnostics");
 	kernel_sort                .init(&cuda_module, "kernel_sort");
 	kernel_material_diffuse    .init(&cuda_module, "kernel_material_diffuse");
 	kernel_material_plastic    .init(&cuda_module, "kernel_material_plastic");
@@ -527,6 +602,7 @@ void Pathtracer::init_module() {
 	kernel_trace_shadow_bvh2   .init(&cuda_module, "kernel_trace_shadow_bvh2");
 	kernel_trace_shadow_bvh4   .init(&cuda_module, "kernel_trace_shadow_bvh4");
 	kernel_trace_shadow_bvh8   .init(&cuda_module, "kernel_trace_shadow_bvh8");
+	kernel_trace_shadow_bvh8_diagnostics.init(&cuda_module, "kernel_trace_shadow_bvh8_diagnostics");
 	kernel_svgf_reproject      .init(&cuda_module, "kernel_svgf_reproject");
 	kernel_svgf_variance       .init(&cuda_module, "kernel_svgf_variance");
 	kernel_svgf_atrous         .init(&cuda_module, "kernel_svgf_atrous");
@@ -570,9 +646,11 @@ void Pathtracer::init_module() {
 	kernel_trace_calc_grid_and_block_size<4>(kernel_trace_bvh2);
 	kernel_trace_calc_grid_and_block_size<4>(kernel_trace_bvh4);
 	kernel_trace_calc_grid_and_block_size<8>(kernel_trace_bvh8);
+	kernel_trace_calc_grid_and_block_size<8>(kernel_trace_bvh8_diagnostics);
 	kernel_trace_calc_grid_and_block_size<4>(kernel_trace_shadow_bvh2);
 	kernel_trace_calc_grid_and_block_size<4>(kernel_trace_shadow_bvh4);
 	kernel_trace_calc_grid_and_block_size<8>(kernel_trace_shadow_bvh8);
+	kernel_trace_calc_grid_and_block_size<8>(kernel_trace_shadow_bvh8_diagnostics);
 
 	kernel_integrate_dielectric.set_grid_dim(Math::divide_round_up(LUT_DIELECTRIC_DIM_IOR * LUT_DIELECTRIC_DIM_ROUGHNESS * LUT_DIELECTRIC_DIM_COS_THETA, kernel_integrate_dielectric.block_dim_x), 1, 1);
 	kernel_average_dielectric  .set_grid_dim(Math::divide_round_up(LUT_DIELECTRIC_DIM_IOR * LUT_DIELECTRIC_DIM_ROUGHNESS,                                kernel_average_dielectric  .block_dim_x), 1, 1);
@@ -1298,6 +1376,15 @@ void Pathtracer::render() {
 		: 1;
 	const int shadow_limited_batch_size = Math::max(1, (BATCH_SIZE * 3) / max_shadow_rays_per_path);
 	int batch_size = Math::min(Math::min(BATCH_SIZE, pixel_count), shadow_limited_batch_size);
+	// Diagnostic kernels are selected only for the exact measured-frame state.
+	// Counter collection and warmup retain the established traversal kernels.
+	const bool traversal_diagnostics_this_frame =
+		cpu_config.enable_traversal_work_diagnostics &&
+		experiment_state == ExperimentState::MEASURING_FPS;
+	CUDAKernel * frame_kernel_trace = traversal_diagnostics_this_frame
+		? &kernel_trace_bvh8_diagnostics : kernel_trace;
+	CUDAKernel * frame_kernel_trace_shadow = traversal_diagnostics_this_frame
+		? &kernel_trace_shadow_bvh8_diagnostics : kernel_trace_shadow;
 
 	const bool vertex_counter_pass =
 		experiment_state == ExperimentState::COLLECTING_COUNTERS &&
@@ -1375,7 +1462,7 @@ void Pathtracer::render() {
 
 			for (int bounce = 0; bounce < gpu_config.num_bounces; bounce++) {
 				event_pool.record(&event_desc_trace[bounce]);
-				kernel_trace->execute(bounce);
+				frame_kernel_trace->execute(bounce);
 
 				event_pool.record(&event_desc_sort[bounce]);
 				kernel_sort.execute(bounce, path_sample_index);
@@ -1402,7 +1489,7 @@ void Pathtracer::render() {
 
 				if (scene.has_lights && gpu_config.enable_next_event_estimation) {
 					event_pool.record(&event_desc_shadow_trace[bounce]);
-					kernel_trace_shadow->execute(bounce);
+					frame_kernel_trace_shadow->execute(bounce);
 				}
 			}
 
@@ -1526,6 +1613,9 @@ void Pathtracer::render() {
 			// This file I/O launches no CUDA work, so the captured kernel range is
 			// still exactly the measured render frames.
 			write_experiment_fps_csv();
+			if (cpu_config.enable_traversal_work_diagnostics) {
+				write_traversal_work_diagnostics_csv();
+			}
 			// The end event synchronized above covers every kernel included in the
 			// FPS timing interval. Stop before the post-frame clear below so Nsight
 			// contains no later CUDA work.

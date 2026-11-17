@@ -25,6 +25,26 @@ struct BVH8Node {
 };
 
 __device__ __constant__ const BVH8Node * bvh8_nodes;
+
+enum BVH8TraversalDiagnosticMetric : int {
+	BVH8_DIAG_RAYS = 0,
+	BVH8_DIAG_NODE_VISITS,
+	BVH8_DIAG_AABB_TESTS,
+	BVH8_DIAG_LEAF_GROUP_VISITS,
+	BVH8_DIAG_TRIANGLE_TESTS,
+	BVH8_DIAG_STACK_PUSHES,
+	BVH8_DIAG_BLAS_ENTRIES,
+	BVH8_DIAG_METRIC_COUNT
+};
+
+template<bool CollectDiagnostics>
+__device__ inline void bvh8_flush_diagnostics(unsigned long long * stats, const unsigned long long local[BVH8_DIAG_METRIC_COUNT]) {
+	if (!CollectDiagnostics || !stats) return;
+	#pragma unroll
+	for (int i = 0; i < BVH8_DIAG_METRIC_COUNT; ++i) {
+		if (local[i] != 0) atomicAdd(&stats[i], local[i]);
+	}
+}
 //jichan add
 // __device__ __constant__ unsigned long long * bvh_counter;
 // __device__ __constant__ unsigned long long * triangle_counter;
@@ -115,8 +135,10 @@ __device__ inline unsigned bvh8_node_intersect(
 #define N_d 4
 #define N_w 16
 
-__device__ inline void bvh8_trace(TraversalData * traversal_data, int ray_count, int * rays_retired) {
+template<bool CollectDiagnostics>
+__device__ inline void bvh8_trace_impl(TraversalData * traversal_data, int ray_count, int * rays_retired, unsigned long long * stats) {
 	extern __shared__ uint2 shared_stack_bvh8[];
+	unsigned long long diagnostic[BVH8_DIAG_METRIC_COUNT] = { };
 
 	uint2 stack[BVH_STACK_SIZE - SHARED_STACK_SIZE];
 	int   stack_size = 0;
@@ -140,7 +162,11 @@ __device__ inline void bvh8_trace(TraversalData * traversal_data, int ray_count,
 
 		if (inactive) {
 			ray_index = atomicAdd(rays_retired, 1);
-			if (ray_index >= ray_count) return;
+			if (ray_index >= ray_count) {
+				bvh8_flush_diagnostics<CollectDiagnostics>(stats, diagnostic);
+				return;
+			}
+			if (CollectDiagnostics) diagnostic[BVH8_DIAG_RAYS]++;
 
 			ray.origin    = traversal_data->ray_origin   .get(ray_index);
 			ray.direction = traversal_data->ray_direction.get(ray_index);
@@ -175,6 +201,7 @@ __device__ inline void bvh8_trace(TraversalData * traversal_data, int ray_count,
 					// assert(stack_size < BVH_STACK_SIZE);
 
 					stack_push(shared_stack_bvh8, stack, stack_size, current_group);
+					if (CollectDiagnostics) diagnostic[BVH8_DIAG_STACK_PUSHES]++;
 				}
 
 				unsigned slot_index     = (child_index_offset - 24) ^ (oct_inv4 & 0xff);
@@ -192,6 +219,10 @@ __device__ inline void bvh8_trace(TraversalData * traversal_data, int ray_count,
 				float4 node_2 = __ldg(&bvh8_nodes[child_node_index].node_2);
 				float4 node_3 = __ldg(&bvh8_nodes[child_node_index].node_3);
 				float4 node_4 = __ldg(&bvh8_nodes[child_node_index].node_4);
+				if (CollectDiagnostics) {
+					diagnostic[BVH8_DIAG_NODE_VISITS]++;
+					diagnostic[BVH8_DIAG_AABB_TESTS] += 8;
+				}
 
 				unsigned hitmask = bvh8_node_intersect(ray, oct_inv4, ray_hit.t, node_0, node_1, node_2, node_3, node_4);
 
@@ -208,6 +239,7 @@ __device__ inline void bvh8_trace(TraversalData * traversal_data, int ray_count,
 			}
 
 			int postpone_threshold = __popc(__activemask()) / BVH8_TRIANGLE_POSTPONING_THRESHOLD_DIVISOR;
+			if (CollectDiagnostics && triangle_group.y != 0) diagnostic[BVH8_DIAG_LEAF_GROUP_VISITS]++;
 
 			// While the triangle group is not empty
 			while (triangle_group.y != 0) {
@@ -223,9 +255,11 @@ __device__ inline void bvh8_trace(TraversalData * traversal_data, int ray_count,
 
 					if (triangle_group.y != 0) {
 						stack_push(shared_stack_bvh8, stack, stack_size, triangle_group);
+						if (CollectDiagnostics) diagnostic[BVH8_DIAG_STACK_PUSHES]++;
 					}
 					if (current_group.y & 0xff000000) {
 						stack_push(shared_stack_bvh8, stack, stack_size, current_group);
+						if (CollectDiagnostics) diagnostic[BVH8_DIAG_STACK_PUSHES]++;
 					}
 
 					tlas_stack_size = stack_size;
@@ -242,6 +276,7 @@ __device__ inline void bvh8_trace(TraversalData * traversal_data, int ray_count,
 					}
 
 					current_group = make_uint2(root_index, 0x80000000);
+					if (CollectDiagnostics) diagnostic[BVH8_DIAG_BLAS_ENTRIES]++;
 
 					break;
 				} else {
@@ -249,6 +284,7 @@ __device__ inline void bvh8_trace(TraversalData * traversal_data, int ray_count,
 					if (thread_count < postpone_threshold) {
 						// Not enough threads currently active that want to check triangle intersection, postpone by pushing on the stack
 						stack_push(shared_stack_bvh8, stack, stack_size, triangle_group);
+						if (CollectDiagnostics) diagnostic[BVH8_DIAG_STACK_PUSHES]++;
 
 						break;
 					}
@@ -259,6 +295,7 @@ __device__ inline void bvh8_trace(TraversalData * traversal_data, int ray_count,
 					// triangle_index is only the bit offset within this node's leaf group.
 					// Count using the global reordered GPU triangle-buffer index instead.
 					int triangle_id = triangle_group.x + triangle_index;
+					if (CollectDiagnostics) diagnostic[BVH8_DIAG_TRIANGLE_TESTS]++;
 					//jichan add
 					// if(*counter_mode){
 					// 	atomicAdd(&triangle_counter[triangle_id], 1ull);
@@ -294,9 +331,18 @@ __device__ inline void bvh8_trace(TraversalData * traversal_data, int ray_count,
 	}
 }
 
-template<typename OnMissCallback>
-__device__ inline void bvh8_trace_shadow(ShadowTraversalData * traversal_data, int ray_count, int * rays_retired, OnMissCallback callback) {
+__device__ inline void bvh8_trace(TraversalData * traversal_data, int ray_count, int * rays_retired) {
+	bvh8_trace_impl<false>(traversal_data, ray_count, rays_retired, nullptr);
+}
+
+__device__ inline void bvh8_trace_diagnostics(TraversalData * traversal_data, int ray_count, int * rays_retired, unsigned long long * stats) {
+	bvh8_trace_impl<true>(traversal_data, ray_count, rays_retired, stats);
+}
+
+template<bool CollectDiagnostics, typename OnMissCallback>
+__device__ inline void bvh8_trace_shadow_impl(ShadowTraversalData * traversal_data, int ray_count, int * rays_retired, OnMissCallback callback, unsigned long long * stats) {
 	extern __shared__ uint2 shared_stack_bvh8[];
+	unsigned long long diagnostic[BVH8_DIAG_METRIC_COUNT] = { };
 
 	uint2 stack[BVH_STACK_SIZE - SHARED_STACK_SIZE];
 	int   stack_size = 0;
@@ -320,7 +366,11 @@ __device__ inline void bvh8_trace_shadow(ShadowTraversalData * traversal_data, i
 
 		if (inactive) {
 			ray_index = atomicAdd(rays_retired, 1);
-			if (ray_index >= ray_count) return;
+			if (ray_index >= ray_count) {
+				bvh8_flush_diagnostics<CollectDiagnostics>(stats, diagnostic);
+				return;
+			}
+			if (CollectDiagnostics) diagnostic[BVH8_DIAG_RAYS]++;
 
 			ray.origin    = traversal_data->ray_origin   .get(ray_index);
 			ray.direction = traversal_data->ray_direction.get(ray_index);
@@ -352,6 +402,7 @@ __device__ inline void bvh8_trace_shadow(ShadowTraversalData * traversal_data, i
 				// If the node group is not yet empty, push it on the stack
 				if (current_group.y & 0xff000000) {
 					stack_push(shared_stack_bvh8, stack, stack_size, current_group);
+					if (CollectDiagnostics) diagnostic[BVH8_DIAG_STACK_PUSHES]++;
 				}
 
 				unsigned slot_index     = (child_index_offset - 24) ^ (oct_inv4 & 0xff);
@@ -364,6 +415,10 @@ __device__ inline void bvh8_trace_shadow(ShadowTraversalData * traversal_data, i
 				float4 node_2 = bvh8_nodes[child_node_index].node_2;
 				float4 node_3 = bvh8_nodes[child_node_index].node_3;
 				float4 node_4 = bvh8_nodes[child_node_index].node_4;
+				if (CollectDiagnostics) {
+					diagnostic[BVH8_DIAG_NODE_VISITS]++;
+					diagnostic[BVH8_DIAG_AABB_TESTS] += 8;
+				}
 
 				unsigned hitmask = bvh8_node_intersect(ray, oct_inv4, max_distance, node_0, node_1, node_2, node_3, node_4);
 
@@ -380,6 +435,7 @@ __device__ inline void bvh8_trace_shadow(ShadowTraversalData * traversal_data, i
 			}
 
 			int postpone_threshold = __popc(__activemask()) / BVH8_TRIANGLE_POSTPONING_THRESHOLD_DIVISOR;
+			if (CollectDiagnostics && triangle_group.y != 0) diagnostic[BVH8_DIAG_LEAF_GROUP_VISITS]++;
 
 			bool hit = false;
 
@@ -393,9 +449,11 @@ __device__ inline void bvh8_trace_shadow(ShadowTraversalData * traversal_data, i
 
 					if (triangle_group.y != 0) {
 						stack_push(shared_stack_bvh8, stack, stack_size, triangle_group);
+						if (CollectDiagnostics) diagnostic[BVH8_DIAG_STACK_PUSHES]++;
 					}
 					if (current_group.y & 0xff000000) {
 						stack_push(shared_stack_bvh8, stack, stack_size, current_group);
+						if (CollectDiagnostics) diagnostic[BVH8_DIAG_STACK_PUSHES]++;
 					}
 
 					tlas_stack_size = stack_size;
@@ -412,6 +470,7 @@ __device__ inline void bvh8_trace_shadow(ShadowTraversalData * traversal_data, i
 					}
 
 					current_group = make_uint2(root_index, 0x80000000);
+					if (CollectDiagnostics) diagnostic[BVH8_DIAG_BLAS_ENTRIES]++;
 
 					break;
 				} else {
@@ -419,12 +478,14 @@ __device__ inline void bvh8_trace_shadow(ShadowTraversalData * traversal_data, i
 					if (thread_count < postpone_threshold) {
 						// Not enough threads currently active that want to check triangle intersection, postpone by pushing on the stack
 						stack_push(shared_stack_bvh8, stack, stack_size, triangle_group);
+						if (CollectDiagnostics) diagnostic[BVH8_DIAG_STACK_PUSHES]++;
 						break;
 					}
 
 					int triangle_index = msb(triangle_group.y);
 					triangle_group.y &= ~(1 << triangle_index);
 
+					if (CollectDiagnostics) diagnostic[BVH8_DIAG_TRIANGLE_TESTS]++;
 					if (triangle_intersect_shadow(triangle_group.x + triangle_index, ray, max_distance)) {
 						hit = true;
 						break;
@@ -462,4 +523,14 @@ __device__ inline void bvh8_trace_shadow(ShadowTraversalData * traversal_data, i
 			iterations_lost += WARP_SIZE - __popc(__activemask()) - N_d;
 		} while (iterations_lost < N_w);
 	}
+}
+
+template<typename OnMissCallback>
+__device__ inline void bvh8_trace_shadow(ShadowTraversalData * traversal_data, int ray_count, int * rays_retired, OnMissCallback callback) {
+	bvh8_trace_shadow_impl<false>(traversal_data, ray_count, rays_retired, callback, nullptr);
+}
+
+template<typename OnMissCallback>
+__device__ inline void bvh8_trace_shadow_diagnostics(ShadowTraversalData * traversal_data, int ray_count, int * rays_retired, OnMissCallback callback, unsigned long long * stats) {
+	bvh8_trace_shadow_impl<true>(traversal_data, ray_count, rays_retired, callback, stats);
 }

@@ -1,7 +1,12 @@
 #include "Integrator.h"
 
 #include <cmath>
+#include <cstring>
+#include <cstdio>
+#include <filesystem>
 #include <limits>
+#include <string>
+#include <vector>
 
 #include <GL/glew.h>
 
@@ -13,6 +18,139 @@
 #include "Core/Allocators/PinnedAllocator.h"
 
 #include "Util/BlueNoise.h"
+
+namespace {
+constexpr uint64_t ORDERED_HASH_OFFSET = 1469598103934665603ull;
+constexpr uint64_t ORDERED_HASH_PRIME = 1099511628211ull;
+constexpr size_t ORDERED_NODE_BLOCK_SIZE = 1024;
+constexpr size_t ORDERED_INDEX_BLOCK_SIZE = 4096;
+
+void ordered_hash_u64(uint64_t & hash, uint64_t value) {
+	for (unsigned byte_index = 0; byte_index < 8; ++byte_index) {
+		hash ^= (value >> (byte_index * 8)) & 0xffu;
+		hash *= ORDERED_HASH_PRIME;
+	}
+}
+
+void ordered_hash_u32(uint64_t & hash, uint32_t value) {
+	for (unsigned byte_index = 0; byte_index < 4; ++byte_index) {
+		hash ^= (value >> (byte_index * 8)) & 0xffu;
+		hash *= ORDERED_HASH_PRIME;
+	}
+}
+
+void ordered_hash_byte(uint64_t & hash, byte value) {
+	hash ^= uint64_t(value);
+	hash *= ORDERED_HASH_PRIME;
+}
+
+void ordered_hash_float(uint64_t & hash, float value) {
+	uint32_t bits = 0;
+	static_assert(sizeof(bits) == sizeof(value));
+	std::memcpy(&bits, &value, sizeof(bits));
+	ordered_hash_u32(hash, bits);
+}
+
+void ordered_hash_node(uint64_t & hash, const BVHNode8 & node, size_t node_index) {
+	ordered_hash_u64(hash, uint64_t(node_index));
+	ordered_hash_float(hash, node.p.x);
+	ordered_hash_float(hash, node.p.y);
+	ordered_hash_float(hash, node.p.z);
+	for (byte value : node.e) ordered_hash_byte(hash, value);
+	ordered_hash_byte(hash, node.imask);
+	ordered_hash_u32(hash, node.base_index_child);
+	ordered_hash_u32(hash, node.base_index_triangle);
+	for (byte value : node.meta) ordered_hash_byte(hash, value);
+	for (byte value : node.quantized_min_x) ordered_hash_byte(hash, value);
+	for (byte value : node.quantized_max_x) ordered_hash_byte(hash, value);
+	for (byte value : node.quantized_min_y) ordered_hash_byte(hash, value);
+	for (byte value : node.quantized_max_y) ordered_hash_byte(hash, value);
+	for (byte value : node.quantized_min_z) ordered_hash_byte(hash, value);
+	for (byte value : node.quantized_max_z) ordered_hash_byte(hash, value);
+}
+
+uint64_t ordered_node_range_hash(const BVH8 & bvh, size_t begin, size_t end) {
+	uint64_t hash = ORDERED_HASH_OFFSET;
+	ordered_hash_u64(hash, uint64_t(begin));
+	ordered_hash_u64(hash, uint64_t(end - begin));
+	for (size_t i = begin; i < end; ++i) ordered_hash_node(hash, bvh.nodes[i], i);
+	return hash;
+}
+
+uint64_t ordered_index_range_hash(const BVH8 & bvh, size_t begin, size_t end) {
+	uint64_t hash = ORDERED_HASH_OFFSET;
+	ordered_hash_u64(hash, uint64_t(begin));
+	ordered_hash_u64(hash, uint64_t(end - begin));
+	for (size_t i = begin; i < end; ++i) {
+		ordered_hash_u64(hash, uint64_t(i));
+		ordered_hash_u32(hash, uint32_t(bvh.indices[i]));
+	}
+	return hash;
+}
+
+struct BVH8StructureStats {
+	uint64_t nodes = 0;
+	uint64_t child_slots = 0;
+	uint64_t internal_slots = 0;
+	uint64_t leaf_slots = 0;
+	uint64_t primitive_refs = 0;
+	uint64_t empty_slots = 0;
+	uint64_t max_depth = 0;
+	uint64_t layout_hash = ORDERED_HASH_OFFSET;
+	uint64_t ordered_node_hash = ORDERED_HASH_OFFSET;
+	uint64_t ordered_index_hash = ORDERED_HASH_OFFSET;
+	uint64_t ordered_content_hash = ORDERED_HASH_OFFSET;
+};
+
+void accumulate_bvh8_structure(const BVH8 & bvh, unsigned node_index, uint64_t depth,
+	BVH8StructureStats & stats, std::vector<uint8_t> & visited) {
+	if (node_index >= bvh.nodes.size() || visited[node_index]) return;
+	visited[node_index] = 1;
+	const BVHNode8 & node = bvh.nodes[node_index];
+	stats.nodes++;
+	stats.max_depth = Math::max(stats.max_depth, depth);
+	stats.layout_hash ^= uint64_t(node.imask);
+	stats.layout_hash *= 1099511628211ull;
+	unsigned internal_before = 0;
+	for (unsigned slot = 0; slot < 8; ++slot) {
+		const byte meta = node.meta[slot];
+		stats.layout_hash ^= uint64_t(meta) + (uint64_t(slot) << 8);
+		stats.layout_hash *= 1099511628211ull;
+		if (meta == 0) {
+			stats.empty_slots++;
+			continue;
+		}
+		stats.child_slots++;
+		if (node.imask & (1u << slot)) {
+			stats.internal_slots++;
+			accumulate_bvh8_structure(bvh, node.base_index_child + internal_before, depth + 1, stats, visited);
+			internal_before++;
+		} else {
+			stats.leaf_slots++;
+			const unsigned unary = unsigned(meta) >> 5;
+			stats.primitive_refs += uint64_t((unary & 1u) + ((unary >> 1) & 1u) + ((unary >> 2) & 1u));
+		}
+	}
+}
+
+BVH8StructureStats get_bvh8_structure_stats(const BVH8 & bvh) {
+	BVH8StructureStats stats;
+	ordered_hash_u64(stats.ordered_node_hash, uint64_t(bvh.nodes.size()));
+	for (size_t i = 0; i < bvh.nodes.size(); ++i) ordered_hash_node(stats.ordered_node_hash, bvh.nodes[i], i);
+	ordered_hash_u64(stats.ordered_index_hash, uint64_t(bvh.indices.size()));
+	for (size_t i = 0; i < bvh.indices.size(); ++i) {
+		ordered_hash_u64(stats.ordered_index_hash, uint64_t(i));
+		ordered_hash_u32(stats.ordered_index_hash, uint32_t(bvh.indices[i]));
+	}
+	ordered_hash_u64(stats.ordered_content_hash, stats.ordered_node_hash);
+	ordered_hash_u64(stats.ordered_content_hash, stats.ordered_index_hash);
+	if (bvh.nodes.size() != 0) {
+		std::vector<uint8_t> visited(bvh.nodes.size(), uint8_t(0));
+		accumulate_bvh8_structure(bvh, 0, 0, stats, visited);
+	}
+	return stats;
+}
+}
 
 #if 0 // Replaced by scene-manifest camera presets and keyframes in Scene.
 namespace {
@@ -969,6 +1107,129 @@ void Integrator::collapseBVH() {
 	else
 		converter.convert();
 	tlas = std::move(newTlas);
+
+	if (cpu_config.enable_bvh_structure_diagnostics) {
+		std::string scene_stem = "scene";
+		if (cpu_config.scene_filenames.size() > 0) {
+			const std::string candidate = std::filesystem::path(cpu_config.scene_filenames[0].data()).stem().string();
+			if (!candidate.empty()) scene_stem = candidate;
+		}
+		std::string tag = cpu_config.experiment_tag.is_empty() ? "diagnostic" : cpu_config.experiment_tag.c_str();
+		for (char & character : tag) {
+			const bool valid = (character >= 'a' && character <= 'z') ||
+				(character >= 'A' && character <= 'Z') ||
+				(character >= '0' && character <= '9') || character == '-' || character == '_';
+			if (!valid) character = '_';
+		}
+		const std::filesystem::path directory = "statistics/diagnostics";
+		std::error_code error;
+		std::filesystem::create_directories(directory, error);
+		const std::filesystem::path filename = directory / (scene_stem + "_" + tag + "_bvh_structure.csv");
+		const std::filesystem::path block_filename = directory / (scene_stem + "_" + tag + "_bvh_ordered_blocks.csv");
+		FILE * file = nullptr;
+		FILE * block_file = nullptr;
+#ifdef _WIN32
+		fopen_s(&file, filename.string().c_str(), "wb");
+		fopen_s(&block_file, block_filename.string().c_str(), "wb");
+#else
+		file = fopen(filename.string().c_str(), "wb");
+		block_file = fopen(block_filename.string().c_str(), "wb");
+#endif
+		if (!error && file) {
+			std::fprintf(file,
+				"scene,tag,collapse_method,cost_mode,counter_source,counter_lambda,counter_depth_limit,separate_primary_shadow,normalize_primary_shadow,shadow_weight,vertex_area_weight,legacy_primitive_cost,counter_collapse,counter_frames,bvh_kind,bvh_index,nodes,child_slots,internal_slots,leaf_slots,primitive_refs,empty_slots,max_depth,avg_child_occupancy,avg_primitives_per_leaf,layout_hash,ordered_node_hash,ordered_index_hash,ordered_content_hash\n");
+			const char * collapse_method = waldCollapse ? "wald" : "ylitie";
+			const char * cost_mode = !counterCollapse ? "sa-only" :
+				(cpu_config.counter_cost_mode == CounterCostMode::COUNTER_ONLY ? "counter-only" :
+				(cpu_config.counter_cost_mode == CounterCostMode::MAXIMUM ? "max" : "additive"));
+			const char * counter_source = !counterCollapse ? "none" : (cpu_config.enable_vertex_counter_rays ? "vertex" : "pixel");
+			if (block_file) {
+				std::fprintf(block_file,
+					"scene,tag,collapse_method,cost_mode,counter_source,bvh_kind,bvh_index,stream,block_index,element_begin,element_count,ordered_block_hash\n");
+			}
+			BVH8StructureStats total;
+			total.layout_hash = ORDERED_HASH_OFFSET;
+			auto write_stats = [&](const char * kind, size_t index, const BVH8 & bvh) {
+				const BVH8StructureStats stats = get_bvh8_structure_stats(bvh);
+				const double occupancy = stats.nodes != 0 ? double(stats.child_slots) / double(stats.nodes) : 0.0;
+				const double primitives_per_leaf = stats.leaf_slots != 0 ? double(stats.primitive_refs) / double(stats.leaf_slots) : 0.0;
+				std::fprintf(file, "%s,%s,%s,%s,%s,%.9g,%d,%d,%d,%.9g,%.9g,%d,%d,%llu,%s,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.9f,%.9f,%llu,%llu,%llu,%llu\n",
+					scene_stem.c_str(), tag.c_str(), collapse_method, cost_mode,
+					counter_source,
+					double(cpu_config.counter_cost_lambda), cpu_config.counter_collapse_max_depth,
+					cpu_config.separate_primary_shadow_counters ? 1 : 0,
+					cpu_config.normalize_primary_shadow_counters ? 1 : 0, double(cpu_config.shadow_counter_weight),
+					double(cpu_config.vertex_counter_area_weight), cpu_config.legacy_counter_primitive_cost ? 1 : 0,
+					counterCollapse ? 1 : 0,
+					static_cast<unsigned long long>(counterCollapse ? cpu_config.counter_collection_frames : 0), kind,
+					static_cast<unsigned long long>(index), static_cast<unsigned long long>(stats.nodes),
+					static_cast<unsigned long long>(stats.child_slots), static_cast<unsigned long long>(stats.internal_slots),
+					static_cast<unsigned long long>(stats.leaf_slots), static_cast<unsigned long long>(stats.primitive_refs),
+					static_cast<unsigned long long>(stats.empty_slots), static_cast<unsigned long long>(stats.max_depth),
+					occupancy, primitives_per_leaf, static_cast<unsigned long long>(stats.layout_hash),
+					static_cast<unsigned long long>(stats.ordered_node_hash),
+					static_cast<unsigned long long>(stats.ordered_index_hash),
+					static_cast<unsigned long long>(stats.ordered_content_hash));
+				if (block_file) {
+					for (size_t begin = 0, block = 0; begin < bvh.nodes.size(); begin += ORDERED_NODE_BLOCK_SIZE, ++block) {
+						const size_t end = Math::min(begin + ORDERED_NODE_BLOCK_SIZE, bvh.nodes.size());
+						std::fprintf(block_file, "%s,%s,%s,%s,%s,%s,%llu,node,%llu,%llu,%llu,%llu\n",
+							scene_stem.c_str(), tag.c_str(), collapse_method, cost_mode, counter_source, kind,
+							static_cast<unsigned long long>(index), static_cast<unsigned long long>(block),
+							static_cast<unsigned long long>(begin), static_cast<unsigned long long>(end - begin),
+							static_cast<unsigned long long>(ordered_node_range_hash(bvh, begin, end)));
+					}
+					for (size_t begin = 0, block = 0; begin < bvh.indices.size(); begin += ORDERED_INDEX_BLOCK_SIZE, ++block) {
+						const size_t end = Math::min(begin + ORDERED_INDEX_BLOCK_SIZE, bvh.indices.size());
+						std::fprintf(block_file, "%s,%s,%s,%s,%s,%s,%llu,index,%llu,%llu,%llu,%llu\n",
+							scene_stem.c_str(), tag.c_str(), collapse_method, cost_mode, counter_source, kind,
+							static_cast<unsigned long long>(index), static_cast<unsigned long long>(block),
+							static_cast<unsigned long long>(begin), static_cast<unsigned long long>(end - begin),
+							static_cast<unsigned long long>(ordered_index_range_hash(bvh, begin, end)));
+					}
+				}
+				total.nodes += stats.nodes; total.child_slots += stats.child_slots; total.internal_slots += stats.internal_slots;
+				total.leaf_slots += stats.leaf_slots; total.primitive_refs += stats.primitive_refs; total.empty_slots += stats.empty_slots;
+				total.max_depth = Math::max(total.max_depth, stats.max_depth);
+				total.layout_hash ^= stats.layout_hash; total.layout_hash *= 1099511628211ull;
+				const uint64_t kind_code = kind[0] == 't' ? 0ull : 1ull;
+				ordered_hash_u64(total.ordered_node_hash, kind_code); ordered_hash_u64(total.ordered_node_hash, uint64_t(index)); ordered_hash_u64(total.ordered_node_hash, stats.ordered_node_hash);
+				ordered_hash_u64(total.ordered_index_hash, kind_code); ordered_hash_u64(total.ordered_index_hash, uint64_t(index)); ordered_hash_u64(total.ordered_index_hash, stats.ordered_index_hash);
+				ordered_hash_u64(total.ordered_content_hash, kind_code); ordered_hash_u64(total.ordered_content_hash, uint64_t(index)); ordered_hash_u64(total.ordered_content_hash, stats.ordered_content_hash);
+			};
+			write_stats("tlas", 0, static_cast<const BVH8 &>(*tlas.get()));
+			for (size_t i = 0; i < mesh_data_count; ++i) {
+				write_stats("blas", i, *static_cast<const BVH8 *>(scene.asset_manager.mesh_datas[i].bvh.get()));
+			}
+			const double total_occupancy = total.nodes != 0 ? double(total.child_slots) / double(total.nodes) : 0.0;
+			const double total_primitives_per_leaf = total.leaf_slots != 0 ? double(total.primitive_refs) / double(total.leaf_slots) : 0.0;
+			std::fprintf(file, "%s,%s,%s,%s,%s,%.9g,%d,%d,%d,%.9g,%.9g,%d,%d,%llu,total,0,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.9f,%.9f,%llu,%llu,%llu,%llu\n",
+				scene_stem.c_str(), tag.c_str(), collapse_method, cost_mode,
+				counter_source,
+				double(cpu_config.counter_cost_lambda), cpu_config.counter_collapse_max_depth,
+				cpu_config.separate_primary_shadow_counters ? 1 : 0,
+				cpu_config.normalize_primary_shadow_counters ? 1 : 0, double(cpu_config.shadow_counter_weight),
+				double(cpu_config.vertex_counter_area_weight), cpu_config.legacy_counter_primitive_cost ? 1 : 0,
+				counterCollapse ? 1 : 0,
+				static_cast<unsigned long long>(counterCollapse ? cpu_config.counter_collection_frames : 0),
+				static_cast<unsigned long long>(total.nodes), static_cast<unsigned long long>(total.child_slots),
+				static_cast<unsigned long long>(total.internal_slots), static_cast<unsigned long long>(total.leaf_slots),
+				static_cast<unsigned long long>(total.primitive_refs), static_cast<unsigned long long>(total.empty_slots),
+				static_cast<unsigned long long>(total.max_depth), total_occupancy, total_primitives_per_leaf,
+				static_cast<unsigned long long>(total.layout_hash),
+				static_cast<unsigned long long>(total.ordered_node_hash),
+				static_cast<unsigned long long>(total.ordered_index_hash),
+				static_cast<unsigned long long>(total.ordered_content_hash));
+			std::fclose(file);
+			if (block_file) std::fclose(block_file);
+			IO::print("Wrote BVH structure diagnostics CSV: {}\n"_sv, filename.string().c_str());
+			if (block_file) IO::print("Wrote ordered BVH block hashes CSV: {}\n"_sv, block_filename.string().c_str());
+		} else {
+			if (file) std::fclose(file);
+			if (block_file) std::fclose(block_file);
+			std::fprintf(stderr, "WARNING: Could not write BVH structure diagnostics: %s\n", filename.string().c_str());
+		}
+	}
 	
 	//aggregated bvh8 upload
 	mesh_data_bvh_offsets.resize(mesh_data_count);

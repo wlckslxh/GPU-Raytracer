@@ -88,6 +88,10 @@ struct CPUConfig {
 	// Bracket only MEASURING_FPS with the CUDA profiler API. Nsight Systems can
 	// use this range to exclude counter collection, collapse, upload and warmup.
 	bool     profile_fps_cuda_kernels = false;
+	// Optional scene-dependence diagnostics. Both are disabled by default so
+	// ordinary rendering keeps the established BVH build and traversal paths.
+	bool     enable_bvh_structure_diagnostics = false;
+	bool     enable_traversal_work_diagnostics = false;
 	bool     exit_after_experiment = false;
 	// Optional filename tag used to keep otherwise identical experiment rows
 	// from different camera/evaluation protocols in separate CSV files.

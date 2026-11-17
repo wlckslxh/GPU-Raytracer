@@ -158,6 +158,7 @@ struct Pathtracer final : Integrator {
 	CUDAKernel kernel_trace_bvh2;
 	CUDAKernel kernel_trace_bvh4;
 	CUDAKernel kernel_trace_bvh8;
+	CUDAKernel kernel_trace_bvh8_diagnostics;
 	CUDAKernel kernel_sort;
 	CUDAKernel kernel_material_diffuse;
 	CUDAKernel kernel_material_plastic;
@@ -167,6 +168,7 @@ struct Pathtracer final : Integrator {
 	CUDAKernel kernel_trace_shadow_bvh2;
 	CUDAKernel kernel_trace_shadow_bvh4;
 	CUDAKernel kernel_trace_shadow_bvh8;
+	CUDAKernel kernel_trace_shadow_bvh8_diagnostics;
 
 	CUDAKernel * kernel_trace        = nullptr;
 	CUDAKernel * kernel_trace_shadow = nullptr;
@@ -213,6 +215,9 @@ struct Pathtracer final : Integrator {
 
 	BufferSizes * pinned_buffer_sizes = nullptr;
 	CUDAMemory::Ptr<uint64_t> ptr_bounce_ray_counts;
+	static constexpr int TRAVERSAL_DIAGNOSTIC_METRIC_COUNT = 7;
+	static constexpr int TRAVERSAL_DIAGNOSTIC_VALUE_COUNT = 2 * MAX_BOUNCES * TRAVERSAL_DIAGNOSTIC_METRIC_COUNT;
+	CUDAMemory::Ptr<uint64_t> ptr_traversal_work_diagnostics;
 
 	struct VertexCounterSeed {
 		float3 position;
@@ -328,4 +333,5 @@ struct Pathtracer final : Integrator {
 	void begin_bvh8_measurement();
 	void write_experiment_fps_csv() const;
 	void write_bounce_ray_counts_csv() const;
+	void write_traversal_work_diagnostics_csv() const;
 };

@@ -122,6 +122,10 @@ __device__ BufferSizes buffer_sizes;
 // Shadow rays deliberately remain excluded: the BVH traversal counters being
 // analysed are collected from camera/path rays only.
 __device__ __constant__ unsigned long long * bounce_ray_counts;
+// Optional measurement-only counters. Layout is
+// [primary/shadow][bounce][BVH8_DIAG_METRIC_COUNT]. Normal traversal kernels
+// never read or write this pointer.
+__device__ __constant__ unsigned long long * traversal_work_diagnostics;
 
 // Counter-only paths use the regular traversal, sorting and BSDF machinery,
 // but carry a synthetic path id instead of a framebuffer pixel index.
@@ -212,6 +216,13 @@ extern "C" __global__ void kernel_trace_bvh8(int bounce) {
 	bvh8_trace(&get_ray_buffer_trace(bounce)->traversal_data, buffer_sizes.trace[bounce], &buffer_sizes.rays_retired[bounce]);
 }
 
+extern "C" __global__ void kernel_trace_bvh8_diagnostics(int bounce) {
+	unsigned long long * stats = traversal_work_diagnostics
+		? traversal_work_diagnostics + bounce * BVH8_DIAG_METRIC_COUNT
+		: nullptr;
+	bvh8_trace_diagnostics(&get_ray_buffer_trace(bounce)->traversal_data, buffer_sizes.trace[bounce], &buffer_sizes.rays_retired[bounce], stats);
+}
+
 extern "C" __global__ void kernel_trace_shadow_bvh2(int bounce) {
 	bvh2_trace_shadow(&ray_buffer_shadow.traversal_data, buffer_sizes.shadow[bounce], &buffer_sizes.rays_retired_shadow[bounce], [bounce](int ray_index) {
 		if (counter_only_mode) return;
@@ -258,6 +269,25 @@ extern "C" __global__ void kernel_trace_shadow_bvh8(int bounce) {
 			aov_framebuffer_add(AOVType::RADIANCE_INDIRECT, pixel_index, make_float4(illumination));
 		}
 	});
+}
+
+extern "C" __global__ void kernel_trace_shadow_bvh8_diagnostics(int bounce) {
+	unsigned long long * stats = traversal_work_diagnostics
+		? traversal_work_diagnostics + (MAX_BOUNCES + bounce) * BVH8_DIAG_METRIC_COUNT
+		: nullptr;
+	bvh8_trace_shadow_diagnostics(&ray_buffer_shadow.traversal_data, buffer_sizes.shadow[bounce], &buffer_sizes.rays_retired_shadow[bounce], [bounce](int ray_index) {
+		if (counter_only_mode) return;
+		float4 illumination_and_pixel_index = ray_buffer_shadow.illumination_and_pixel_index[ray_index];
+		float3 illumination = make_float3(illumination_and_pixel_index);
+		int    pixel_index  = __float_as_int(illumination_and_pixel_index.w);
+
+		aov_framebuffer_add(AOVType::RADIANCE, pixel_index, make_float4(illumination));
+		if (bounce == 0) {
+			aov_framebuffer_set(AOVType::RADIANCE_DIRECT, pixel_index, make_float4(illumination));
+		} else {
+			aov_framebuffer_add(AOVType::RADIANCE_INDIRECT, pixel_index, make_float4(illumination));
+		}
+	}, stats);
 }
 
 // Returns true if the path should terminate
