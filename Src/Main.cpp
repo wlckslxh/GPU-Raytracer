@@ -77,10 +77,10 @@ int main(int num_args, char ** args) {
 	Args::parse(num_args, args);
 	if (cpu_config.scene_filenames.size() == 0) {
 		//cpu_config.scene_filenames.push_back("Data/sponza/scene.xml"_sv);
-		//cpu_config.scene_filenames.push_back("Data/models_0930/bistroexterior_mod_etc1s/bistroexterior_mod.json"_sv);
+		cpu_config.scene_filenames.push_back("Data/models_0930/bistroexterior_mod_etc1s/bistroexterior_mod.json"_sv);
 		//cpu_config.scene_filenames.push_back("Data/models_0930/bistrointerior_etc1s/Bistrointerior.json"_sv);
 		//cpu_config.scene_filenames.push_back("Data/models_0930/intelSponza_mod_etc1s/intelSponza_mod.json"_sv);
-		cpu_config.scene_filenames.push_back("Data/models_0930/sanMiguel_etc1s/sanMiguel.json"_sv);
+		//cpu_config.scene_filenames.push_back("Data/models_0930/sanMiguel_etc1s/sanMiguel.json"_sv);
 		//cpu_config.scene_filenames.push_back("Data/models_0930/sponza_mod_etc1s/sponza_mod.json"_sv);
 		//cpu_config.scene_filenames.push_back("Data/bistroexterior/bistroexterior.gltf"_sv);
 	}

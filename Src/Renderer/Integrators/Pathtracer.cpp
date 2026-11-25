@@ -20,6 +20,8 @@
 #include "CUDA/Common.h"
 
 void Pathtracer::write_experiment_fps_csv() const {
+	const uint64_t measured_frame_count = cpu_config.fps_measurement_frames *
+		uint64_t(Math::max(cpu_config.fps_uniform_quaternion_count, 1));
 	const char * source_bvh = "unknown";
 	switch (source_bvh_type) {
 		case BVHType::BVH:  source_bvh = "sah";  break;
@@ -117,7 +119,7 @@ void Pathtracer::write_experiment_fps_csv() const {
 				cpu_config.counter_collection_bounces, cpu_config.disable_russian_roulette_during_counter_collection ? 1 : 0, cpu_config.measurement_bounces,
 				static_cast<unsigned long long>(cpu_config.counter_collection_frames),
 				static_cast<unsigned long long>(cpu_config.fps_warmup_frames),
-				static_cast<unsigned long long>(cpu_config.fps_measurement_frames),
+				static_cast<unsigned long long>(measured_frame_count),
 				cpu_config.rays_per_pixel_per_frame, total_frame_time_ms, static_cast<double>(experiment_fps));
 		} else {
 			std::fprintf(file, "%s,%s,1,%llu,%d,%d,%d,%llu,%llu,%llu,%.6f,%.6f\n",
@@ -125,7 +127,7 @@ void Pathtracer::write_experiment_fps_csv() const {
 				cpu_config.counter_collection_bounces, cpu_config.disable_russian_roulette_during_counter_collection ? 1 : 0, cpu_config.measurement_bounces,
 				static_cast<unsigned long long>(cpu_config.counter_collection_frames),
 				static_cast<unsigned long long>(cpu_config.fps_warmup_frames),
-				static_cast<unsigned long long>(cpu_config.fps_measurement_frames),
+				static_cast<unsigned long long>(measured_frame_count),
 				total_frame_time_ms, static_cast<double>(experiment_fps));
 		}
 	} else {
@@ -140,7 +142,7 @@ void Pathtracer::write_experiment_fps_csv() const {
 				cpu_config.counter_collection_bounces, cpu_config.disable_russian_roulette_during_counter_collection ? 1 : 0, cpu_config.measurement_bounces,
 				static_cast<unsigned long long>(cpu_config.counter_collection_frames),
 				static_cast<unsigned long long>(cpu_config.fps_warmup_frames),
-				static_cast<unsigned long long>(cpu_config.fps_measurement_frames),
+				static_cast<unsigned long long>(measured_frame_count),
 				cpu_config.rays_per_pixel_per_frame, total_frame_time_ms, static_cast<double>(experiment_fps));
 		} else {
 			std::fprintf(file, "%s,%s,%d,%d,%d,%d,%d,%llu,%llu,%llu,%.6f,%.6f\n",
@@ -148,13 +150,62 @@ void Pathtracer::write_experiment_fps_csv() const {
 				cpu_config.counter_collection_bounces, cpu_config.disable_russian_roulette_during_counter_collection ? 1 : 0, cpu_config.measurement_bounces,
 				static_cast<unsigned long long>(cpu_config.counter_collection_frames),
 				static_cast<unsigned long long>(cpu_config.fps_warmup_frames),
-				static_cast<unsigned long long>(cpu_config.fps_measurement_frames),
+				static_cast<unsigned long long>(measured_frame_count),
 				total_frame_time_ms, static_cast<double>(experiment_fps));
 		}
 	}
 	std::fclose(file);
 
 	IO::print("Wrote experiment FPS CSV: {}\n"_sv, filename.string().c_str());
+}
+
+void Pathtracer::write_experiment_fps_rotations_csv() const {
+	if (cpu_config.fps_uniform_quaternion_count <= 0 || fps_rotation_values.empty()) return;
+
+	std::string scene_name = "scene";
+	if (cpu_config.scene_filenames.size() > 0) {
+		const std::string candidate = std::filesystem::path(cpu_config.scene_filenames[0].data()).stem().string();
+		if (!candidate.empty()) scene_name = candidate;
+	}
+	std::string tag = cpu_config.experiment_tag.is_empty() ? "untagged" : cpu_config.experiment_tag.c_str();
+	for (char & character : tag) {
+		const bool valid =
+			(character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || character == '-' || character == '_';
+		if (!valid) character = '_';
+	}
+
+	const std::filesystem::path directory = "statistics/fps_rotations";
+	std::error_code error;
+	std::filesystem::create_directories(directory, error);
+	if (error) {
+		std::fprintf(stderr, "WARNING: Could not create FPS rotation statistics directory: %s\n", error.message().c_str());
+		return;
+	}
+	const std::filesystem::path filename = directory / (scene_name + "_exp-" + tag + "_rotations.csv");
+	FILE * file = nullptr;
+#ifdef _WIN32
+	fopen_s(&file, filename.string().c_str(), "wb");
+#else
+	file = fopen(filename.string().c_str(), "wb");
+#endif
+	if (!file) {
+		std::fprintf(stderr, "WARNING: Could not write FPS rotation statistics file: %s\n", filename.string().c_str());
+		return;
+	}
+
+	std::fprintf(file, "scene,experiment_tag,rotation_index,qx,qy,qz,qw,frames,total_time_ms,fps\n");
+	for (size_t i = 0; i < fps_rotation_values.size(); ++i) {
+		const Quaternion & q = scene.uniform_fps_quaternions[i];
+		std::fprintf(file, "%s,%s,%zu,%.9g,%.9g,%.9g,%.9g,%llu,%.6f,%.6f\n",
+			scene_name.c_str(), tag.c_str(), i,
+			double(q.x), double(q.y), double(q.z), double(q.w),
+			static_cast<unsigned long long>(cpu_config.fps_measurement_frames),
+			fps_rotation_times_ms[i], double(fps_rotation_values[i]));
+	}
+	std::fclose(file);
+	IO::print("Wrote per-rotation FPS CSV: {}\n"_sv, filename.string().c_str());
 }
 
 void Pathtracer::write_bounce_ray_counts_csv() const {
@@ -379,6 +430,42 @@ void Pathtracer::init_vertex_counter_seeds() {
 		cpu_config.separate_primary_shadow_counters ? "separate primary/shadow" : "unified");
 }
 
+void Pathtracer::init_quaternion_counter_directions() {
+	auto global_quaternion_counter_directions = cuda_module.get_global("quaternion_counter_directions");
+	global_quaternion_counter_directions.set_value(CUDAMemory::Ptr<QuaternionCounterDirection> { });
+	quaternion_counter_direction_count = 0;
+
+	if (!cpu_config.counter_quaternion_single_ray ||
+		cpu_config.counter_quaternions_per_position <= 0) return;
+
+	const uint64_t quaternion_count = uint64_t(cpu_config.counter_quaternions_per_position);
+	// Reuse Scene's fixed-seed quaternion sequence so the batched single-ray
+	// mode samples exactly the same global rotations as the camera mode.
+	if (!scene.set_uniform_quaternion_counter_sample(
+		0, cpu_config.counter_collection_frames, quaternion_count,
+		cpu_config.counter_quaternion_distribution,
+		cpu_config.counter_quaternion_horizon_power,
+		cpu_config.counter_quaternion_horizon_mix,
+		cpu_config.counter_quaternion_roll_mode)) {
+		IO::print("WARNING: Could not prepare quaternion counter directions.\n"_sv);
+		return;
+	}
+
+	std::vector<QuaternionCounterDirection> directions;
+	directions.reserve(size_t(quaternion_count));
+	for (uint64_t i = 0; i < quaternion_count; ++i) {
+		const Vector3 direction = Vector3::normalize(
+			scene.uniform_counter_quaternions[i] * Vector3(0.0f, 0.0f, -1.0f));
+		directions.push_back({ float3 { direction.x, direction.y, direction.z } });
+	}
+
+	ptr_quaternion_counter_directions = CUDAMemory::malloc(directions.data(), directions.size());
+	quaternion_counter_direction_count = directions.size();
+	global_quaternion_counter_directions.set_value(ptr_quaternion_counter_directions);
+	IO::print("Quaternion single-ray counter directions: {} fixed directions, batched per path position.\n"_sv,
+		quaternion_counter_direction_count);
+}
+
 void Pathtracer::cuda_init(unsigned frame_buffer_handle, int screen_width, int screen_height) {
 	init_module();
 	init_globals();
@@ -387,6 +474,8 @@ void Pathtracer::cuda_init(unsigned frame_buffer_handle, int screen_width, int s
 	global_vertex_counter_shadow_nee = cuda_module.get_global("vertex_counter_shadow_nee");
 	global_vertex_counter_shadow_nee.set_value(
 		cpu_config.enable_vertex_counter_shadow_nee || cpu_config.separate_primary_shadow_counters);
+	global_quaternion_counter_batched_mode = cuda_module.get_global("quaternion_counter_batched_mode");
+	global_quaternion_counter_batched_mode.set_value(false);
 
 	pinned_buffer_sizes = CUDAMemory::malloc_pinned<BufferSizes>();
 	pinned_buffer_sizes->reset(BATCH_SIZE);
@@ -406,6 +495,7 @@ void Pathtracer::cuda_init(unsigned frame_buffer_handle, int screen_width, int s
 	init_materials();
 	init_geometry();
 	init_vertex_counter_seeds();
+	init_quaternion_counter_directions();
 	init_sky();
 	init_rng();
 	init_events();
@@ -444,6 +534,7 @@ void Pathtracer::cuda_free() {
 	CUDAMemory::free_pinned(pinned_buffer_sizes);
 	if (ptr_bounce_ray_counts.ptr) CUDAMemory::free(ptr_bounce_ray_counts);
 	if (ptr_vertex_counter_seeds.ptr) CUDAMemory::free(ptr_vertex_counter_seeds);
+	if (ptr_quaternion_counter_directions.ptr) CUDAMemory::free(ptr_quaternion_counter_directions);
 
 	if (ptr_light_triangle_indices.ptr) CUDAMemory::free(ptr_light_triangle_indices);
 	if (ptr_light_triangle_cumulative_probability.ptr) CUDAMemory::free(ptr_light_triangle_cumulative_probability);
@@ -515,6 +606,7 @@ void Pathtracer::init_module() {
 	kernel_average_conductor   .init(&cuda_module, "kernel_average_conductor");
 	kernel_generate            .init(&cuda_module, "kernel_generate");
 	kernel_generate_vertex_counter.init(&cuda_module, "kernel_generate_vertex_counter");
+	kernel_generate_quaternion_counter.init(&cuda_module, "kernel_generate_quaternion_counter");
 	kernel_trace_bvh2          .init(&cuda_module, "kernel_trace_bvh2");
 	kernel_trace_bvh4          .init(&cuda_module, "kernel_trace_bvh4");
 	kernel_trace_bvh8          .init(&cuda_module, "kernel_trace_bvh8");
@@ -550,6 +642,7 @@ void Pathtracer::init_module() {
 	kernel_average_conductor   .set_block_dim(256, 1, 1);
 	kernel_generate            .set_block_dim(256, 1, 1);
 	kernel_generate_vertex_counter.set_block_dim(256, 1, 1);
+	kernel_generate_quaternion_counter.set_block_dim(256, 1, 1);
 	kernel_sort                .set_block_dim(256, 1, 1);
 	kernel_material_diffuse    .set_block_dim(256, 1, 1);
 	kernel_material_plastic    .set_block_dim(256, 1, 1);
@@ -720,6 +813,7 @@ void Pathtracer::resize_init(unsigned frame_buffer_handle, int width, int height
 
 	kernel_generate           .set_grid_dim(Math::divide_round_up(BATCH_SIZE, kernel_generate           .block_dim_x), 1, 1);
 	kernel_generate_vertex_counter.set_grid_dim(Math::divide_round_up(BATCH_SIZE, kernel_generate_vertex_counter.block_dim_x), 1, 1);
+	kernel_generate_quaternion_counter.set_grid_dim(1, 1, 1);
 	kernel_sort               .set_grid_dim(Math::divide_round_up(BATCH_SIZE, kernel_sort               .block_dim_x), 1, 1);
 	kernel_material_diffuse   .set_grid_dim(Math::divide_round_up(BATCH_SIZE, kernel_material_diffuse   .block_dim_x), 1, 1);
 	kernel_material_plastic   .set_grid_dim(Math::divide_round_up(BATCH_SIZE, kernel_material_plastic   .block_dim_x), 1, 1);
@@ -1226,7 +1320,10 @@ void Pathtracer::begin_bvh8_measurement() {
 
 	CUDAMemory::memset_async(ptr_counter_mode, counter_mode, 1, memory_stream);
 	measuringFrame = 0;
+	fps_rotation_index = 0;
 	total_frame_time_ms = 0.0;
+	fps_rotation_times_ms.clear();
+	fps_rotation_values.clear();
 	experiment_state = cpu_config.enable_experiment_fps_measurement
 		? (cpu_config.fps_warmup_frames > 0 ? ExperimentState::WARMING_UP_FPS : ExperimentState::MEASURING_FPS)
 		: ExperimentState::FINISHED;
@@ -1270,6 +1367,50 @@ void Pathtracer::render_vertex_counter_paths(int path_sample_index, int batch_si
 	global_counter_only_mode.set_value(false);
 }
 
+void Pathtracer::render_quaternion_counter_paths(int position_index, int batch_size) {
+	const int total_rays = int(quaternion_counter_direction_count);
+	const int path_index_base = position_index * total_rays;
+	global_counter_only_mode.set_value(true);
+	global_quaternion_counter_batched_mode.set_value(true);
+
+	for (int direction_offset = 0; direction_offset < total_rays; direction_offset += batch_size) {
+		const int ray_count = Math::min(batch_size, total_rays - direction_offset);
+		const int path_sample_index = path_index_base + direction_offset;
+		pinned_buffer_sizes->reset(ray_count);
+		global_buffer_sizes.set_value(*pinned_buffer_sizes);
+
+		kernel_generate_quaternion_counter.set_grid_dim(
+			Math::divide_round_up(ray_count, kernel_generate_quaternion_counter.block_dim_x), 1, 1);
+		kernel_sort.set_grid_dim(Math::divide_round_up(ray_count, kernel_sort.block_dim_x), 1, 1);
+		kernel_material_diffuse.set_grid_dim(Math::divide_round_up(ray_count, kernel_material_diffuse.block_dim_x), 1, 1);
+		kernel_material_plastic.set_grid_dim(Math::divide_round_up(ray_count, kernel_material_plastic.block_dim_x), 1, 1);
+		kernel_material_pbr_metallic_roughness.set_grid_dim(
+			Math::divide_round_up(ray_count, kernel_material_pbr_metallic_roughness.block_dim_x), 1, 1);
+		kernel_material_dielectric.set_grid_dim(Math::divide_round_up(ray_count, kernel_material_dielectric.block_dim_x), 1, 1);
+		kernel_material_conductor.set_grid_dim(Math::divide_round_up(ray_count, kernel_material_conductor.block_dim_x), 1, 1);
+
+		kernel_generate_quaternion_counter.execute(path_index_base, direction_offset, ray_count);
+		for (int bounce = 0; bounce < gpu_config.num_bounces; ++bounce) {
+			kernel_trace->execute(bounce);
+			kernel_sort.execute(bounce, path_sample_index);
+
+			if (scene.has_diffuse) kernel_material_diffuse.execute(bounce, path_sample_index);
+			if (scene.has_plastic) kernel_material_plastic.execute(bounce, path_sample_index);
+			if (scene.has_pbr_metallic_roughness) kernel_material_pbr_metallic_roughness.execute(bounce, path_sample_index);
+			if (scene.has_dielectric) kernel_material_dielectric.execute(bounce, path_sample_index);
+			if (scene.has_conductor) kernel_material_conductor.execute(bounce, path_sample_index);
+
+			if ((cpu_config.enable_vertex_counter_shadow_nee || cpu_config.separate_primary_shadow_counters) &&
+				scene.has_lights && gpu_config.enable_next_event_estimation) {
+				kernel_trace_shadow->execute(bounce);
+			}
+		}
+	}
+
+	global_quaternion_counter_batched_mode.set_value(false);
+	global_counter_only_mode.set_value(false);
+}
+
 void Pathtracer::render() {
 	event_pool.reset();
 
@@ -1299,21 +1440,31 @@ void Pathtracer::render() {
 	const int shadow_limited_batch_size = Math::max(1, (BATCH_SIZE * 3) / max_shadow_rays_per_path);
 	int batch_size = Math::min(Math::min(BATCH_SIZE, pixel_count), shadow_limited_batch_size);
 
+	const bool quaternion_counter_pass =
+		experiment_state == ExperimentState::COLLECTING_COUNTERS &&
+		cpu_config.counter_quaternion_single_ray &&
+		cpu_config.counter_quaternions_per_position > 0 &&
+		quaternion_counter_direction_count > 0;
 	const bool vertex_counter_pass =
 		experiment_state == ExperimentState::COLLECTING_COUNTERS &&
 		cpu_config.enable_vertex_counter_rays &&
 		vertex_counter_seed_count > 0;
-	if (vertex_counter_pass) {
-		const int vertex_batch_size = Math::min(
-			shadow_limited_batch_size,
-			int(vertex_counter_seed_count * size_t(cpu_config.counter_rays_per_vertex)));
-		// Couple vertex-counter sampling directly to the completed counter-frame
-		// count. The normal renderer sample index can be reset by camera or GPU
-		// state changes and must not cause repeated vertex directions.
+	if (quaternion_counter_pass || vertex_counter_pass) {
+		// Couple synthetic counter sampling directly to the completed counter-frame
+		// count. Camera changes reset the normal renderer sample index.
 		const int counter_frame_sample_index = static_cast<int>(bvh_counter_dumped);
-		render_vertex_counter_paths(counter_frame_sample_index, vertex_batch_size);
+		if (quaternion_counter_pass) {
+			const int quaternion_batch_size = Math::min(
+				shadow_limited_batch_size, int(quaternion_counter_direction_count));
+			render_quaternion_counter_paths(counter_frame_sample_index, quaternion_batch_size);
+		} else {
+			const int vertex_batch_size = Math::min(
+				shadow_limited_batch_size,
+				int(vertex_counter_seed_count * size_t(cpu_config.counter_rays_per_vertex)));
+			render_vertex_counter_paths(counter_frame_sample_index, vertex_batch_size);
+		}
 
-		if (bvh_counter_dumped + 1 >= cpu_config.counter_collection_frames) {
+		if (bvh_counter_dumped + 1 >= cpu_config.counter_collection_render_frames()) {
 			CUDACALL(cuStreamSynchronize(nullptr));
 			if (cpu_config.enable_bounce_ray_count_dump) {
 				write_bounce_ray_counts_csv();
@@ -1336,12 +1487,19 @@ void Pathtracer::render() {
 			++bvh_counter_dumped;
 		}
 
-		// The following BVH8 FPS pass may use a smaller batch than the vertex
-		// pass when analytic lights limit the fixed shadow-ray buffer. Restore
-		// that exact path batch size so kernel_sort cannot consume stale vertex
-		// entries beyond the rays overwritten by kernel_generate.
+		// Restore the exact regular-render batch size so the following BVH8 FPS
+		// pass cannot consume stale synthetic-counter entries.
 		pinned_buffer_sizes->reset(batch_size);
 		global_buffer_sizes.set_value(*pinned_buffer_sizes);
+		kernel_generate_quaternion_counter.set_grid_dim(
+			Math::divide_round_up(BATCH_SIZE, kernel_generate_quaternion_counter.block_dim_x), 1, 1);
+		kernel_sort.set_grid_dim(Math::divide_round_up(BATCH_SIZE, kernel_sort.block_dim_x), 1, 1);
+		kernel_material_diffuse.set_grid_dim(Math::divide_round_up(BATCH_SIZE, kernel_material_diffuse.block_dim_x), 1, 1);
+		kernel_material_plastic.set_grid_dim(Math::divide_round_up(BATCH_SIZE, kernel_material_plastic.block_dim_x), 1, 1);
+		kernel_material_pbr_metallic_roughness.set_grid_dim(
+			Math::divide_round_up(BATCH_SIZE, kernel_material_pbr_metallic_roughness.block_dim_x), 1, 1);
+		kernel_material_dielectric.set_grid_dim(Math::divide_round_up(BATCH_SIZE, kernel_material_dielectric.block_dim_x), 1, 1);
+		kernel_material_conductor.set_grid_dim(Math::divide_round_up(BATCH_SIZE, kernel_material_conductor.block_dim_x), 1, 1);
 		return;
 	}
 
@@ -1349,10 +1507,13 @@ void Pathtracer::render() {
 	// frame. Standard path accumulation below supports multiple independent
 	// samples per pixel; preserve the established SVGF behavior.
 	const int rays_per_pixel = gpu_config.enable_svgf ? 1 : cpu_config.rays_per_pixel_per_frame;
-	// sample_index is one-based in the established accumulation path. Keep the
-	// per-path indices one-based too, while assigning a distinct index to every
-	// sub-sample rendered in this display frame.
-	const int first_path_sample_index = (sample_index - 1) * rays_per_pixel + 1;
+	// Camera changes reset the ordinary accumulation sample index. During a
+	// counter pass, derive sampling directly from the completed counter-render
+	// count so every position/orientation pair receives distinct random samples.
+	// Keep the established one-based per-path convention.
+	const int first_path_sample_index = experiment_state == ExperimentState::COLLECTING_COUNTERS
+		? int(bvh_counter_dumped * uint64_t(rays_per_pixel)) + 1
+		: (sample_index - 1) * rays_per_pixel + 1;
 
 	for (int local_sample = 0; local_sample < rays_per_pixel; local_sample++) {
 		// The previous sample may have ended in a partial batch. Restore the
@@ -1423,7 +1584,7 @@ void Pathtracer::render() {
 	}
 
 	if (experiment_state == ExperimentState::COLLECTING_COUNTERS) {
-		if (bvh_counter_dumped + 1 >= cpu_config.counter_collection_frames) {
+		if (bvh_counter_dumped + 1 >= cpu_config.counter_collection_render_frames()) {
 			CUDACALL(cuStreamSynchronize(nullptr));
 			if (cpu_config.enable_bounce_ray_count_dump) {
 				write_bounce_ray_counts_csv();
@@ -1515,17 +1676,46 @@ void Pathtracer::render() {
 			event_pool.pool[0], event_pool.pool[event_pool.num_used - 1]);
 
 		if (++measuringFrame >= cpu_config.fps_measurement_frames) {
-			experiment_fps = total_frame_time_ms > 0.0
+			const float segment_fps = total_frame_time_ms > 0.0
 				? float(1000.0 * double(cpu_config.fps_measurement_frames) / total_frame_time_ms)
 				: 0.0f;
-			IO::print("Experiment FPS: {} ({} frames, {} ms)\\n"_sv,
-				experiment_fps, cpu_config.fps_measurement_frames, total_frame_time_ms);
+			if (cpu_config.fps_uniform_quaternion_count > 0) {
+				fps_rotation_times_ms.push_back(total_frame_time_ms);
+				fps_rotation_values.push_back(segment_fps);
+				IO::print("Experiment FPS rotation B{}: {} ({} frames, {} ms)\n"_sv,
+					fps_rotation_index, segment_fps, cpu_config.fps_measurement_frames, total_frame_time_ms);
+
+				if (++fps_rotation_index < uint64_t(cpu_config.fps_uniform_quaternion_count)) {
+					measuringFrame = 0;
+					total_frame_time_ms = 0.0;
+				} else {
+					double aggregate_time_ms = 0.0;
+					for (double rotation_time_ms : fps_rotation_times_ms) aggregate_time_ms += rotation_time_ms;
+					total_frame_time_ms = aggregate_time_ms;
+					const uint64_t aggregate_frames = cpu_config.fps_measurement_frames * fps_rotation_values.size();
+					experiment_fps = aggregate_time_ms > 0.0
+						? float(1000.0 * double(aggregate_frames) / aggregate_time_ms) : 0.0f;
+					IO::print("Experiment FPS: {} ({} frames, {} ms; {} fixed rotations)\n"_sv,
+						experiment_fps, aggregate_frames, aggregate_time_ms, fps_rotation_values.size());
+				}
+			} else {
+				experiment_fps = segment_fps;
+				IO::print("Experiment FPS: {} ({} frames, {} ms)\n"_sv,
+					experiment_fps, cpu_config.fps_measurement_frames, total_frame_time_ms);
+			}
+
+			if (cpu_config.fps_uniform_quaternion_count > 0 &&
+				fps_rotation_index < uint64_t(cpu_config.fps_uniform_quaternion_count)) {
+				// Reuse the already collapsed BVH and continue directly with the
+				// next fixed rotation. The profiler remains active across all segments.
+			} else {
 			// Persist the authoritative FPS result before ending an Nsight
 			// cudaProfilerApi capture. With capture-range-end=stop, report shutdown
 			// may otherwise race the CPU-side CSV write that follows cuProfilerStop.
 			// This file I/O launches no CUDA work, so the captured kernel range is
 			// still exactly the measured render frames.
 			write_experiment_fps_csv();
+			write_experiment_fps_rotations_csv();
 			// The end event synchronized above covers every kernel included in the
 			// FPS timing interval. Stop before the post-frame clear below so Nsight
 			// contains no later CUDA work.
@@ -1535,6 +1725,7 @@ void Pathtracer::render() {
 			}
 			experiment_state = ExperimentState::FINISHED;
 			experiment_finished = true;
+			}
 		}
 	}
 

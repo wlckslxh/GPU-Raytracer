@@ -141,7 +141,42 @@ static void parse_args(const Array<StringView> & args, Allocator * allocator) {
 	options.emplace_back(StringView { }, "closest-hit-path-counter"_sv, "Uses closest-hit and shadow any-hit paths instead of all BVH visits for counter-driven collapse"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.enable_closest_hit_path_counter = parse_arg_bool(args[i + 1]); });
 	options.emplace_back(StringView { }, "measurement-bounces"_sv, "Sets pathtracing bounces used for post-conversion FPS measurement"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.measurement_bounces = Math::clamp(parse_arg_int(args[i + 1]), 0, MAX_BOUNCES - 1); });
 	options.emplace_back(StringView { }, "rays-per-pixel"_sv, "Sets complete camera paths dispatched per pixel in each Pathtracer frame"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.rays_per_pixel_per_frame = Math::max(parse_arg_int(args[i + 1]), 1); });
-	options.emplace_back(StringView { }, "counter-frames"_sv, "Sets the number of camera frames used to collect BVH2 counters"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.counter_collection_frames = parse_arg_nonnegative_u64(args[i + 1]); });
+	options.emplace_back(StringView { }, "counter-quaternions-per-position"_sv, "Uses this many globally sampled uniform camera quaternions at every counter-path position; zero preserves original camera rotations"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.counter_quaternions_per_position = Math::max(parse_arg_int(args[i + 1]), 0); });
+	options.emplace_back(StringView { }, "counter-quaternion-distribution"_sv, "Selects uniform or world-horizon-sine counter quaternion sampling"_sv, 1, [](const Array<StringView> & args, size_t i) {
+		if (args[i + 1] == "uniform") {
+			cpu_config.counter_quaternion_distribution = CounterQuaternionDistribution::UNIFORM;
+		} else if (args[i + 1] == "world-horizon-sine") {
+			cpu_config.counter_quaternion_distribution = CounterQuaternionDistribution::WORLD_HORIZON_SINE;
+		} else {
+			IO::print("'{}' is not a recognized counter quaternion distribution! Supported options: uniform, world-horizon-sine\n"_sv, args[i + 1]);
+			IO::exit(1);
+		}
+	});
+	options.emplace_back(StringView { }, "counter-quaternion-horizon-power"_sv, "Sets the nonnegative sin(theta) exponent for world-horizon-sine sampling"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.counter_quaternion_horizon_power = Math::max(parse_arg_float(args[i + 1]), 0.0f); });
+	options.emplace_back(StringView { }, "counter-quaternion-horizon-mix"_sv, "Mixes uniform (0) and world-horizon-sine (1) direction sampling"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.counter_quaternion_horizon_mix = Math::clamp(parse_arg_float(args[i + 1]), 0.0f, 1.0f); });
+	options.emplace_back(StringView { }, "counter-quaternion-roll-mode"_sv, "Selects uniform camera roll or world-up zero roll for counter quaternion sampling"_sv, 1, [](const Array<StringView> & args, size_t i) {
+		if (args[i + 1] == "uniform") {
+			cpu_config.counter_quaternion_roll_mode = CounterQuaternionRollMode::UNIFORM;
+		} else if (args[i + 1] == "world-up") {
+			cpu_config.counter_quaternion_roll_mode = CounterQuaternionRollMode::WORLD_UP;
+		} else {
+			IO::print("'{}' is not a recognized counter quaternion roll mode! Supported options: uniform, world-up\n"_sv, args[i + 1]);
+			IO::exit(1);
+		}
+	});
+	options.emplace_back(StringView { }, "counter-quaternion-single-ray"_sv, "Emits one counter-only forward path per position/quaternion instead of rendering a complete pixel frame"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.counter_quaternion_single_ray = parse_arg_bool(args[i + 1]); });
+	options.emplace_back(StringView { }, "fps-uniform-quaternions"_sv, "Measures every FPS camera-keyframe position at this many globally fixed uniform rotations after one counter/collapse pass; zero preserves original camera rotations"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.fps_uniform_quaternion_count = Math::max(parse_arg_int(args[i + 1]), 0); });
+	options.emplace_back(StringView { }, "fps-quaternion-roll-mode"_sv, "Selects uniform camera roll or world-up zero roll for FPS quaternion validation"_sv, 1, [](const Array<StringView> & args, size_t i) {
+		if (args[i + 1] == "uniform") {
+			cpu_config.fps_quaternion_roll_mode = CounterQuaternionRollMode::UNIFORM;
+		} else if (args[i + 1] == "world-up") {
+			cpu_config.fps_quaternion_roll_mode = CounterQuaternionRollMode::WORLD_UP;
+		} else {
+			IO::print("'{}' is not a recognized FPS quaternion roll mode! Supported options: uniform, world-up\n"_sv, args[i + 1]);
+			IO::exit(1);
+		}
+	});
+	options.emplace_back(StringView { }, "counter-frames"_sv, "Sets the number of camera-path positions used to collect BVH2 counters"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.counter_collection_frames = parse_arg_nonnegative_u64(args[i + 1]); });
 	options.emplace_back(StringView { }, "fps-warmup-frames"_sv, "Sets the number of rebuilt-BVH warmup frames"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.fps_warmup_frames = parse_arg_nonnegative_u64(args[i + 1]); });
 	options.emplace_back(StringView { }, "fps-frames"_sv, "Sets the number of rebuilt-BVH frames used for FPS measurement"_sv, 1, [](const Array<StringView> & args, size_t i) { cpu_config.fps_measurement_frames = parse_arg_nonnegative_u64(args[i + 1]); });
 

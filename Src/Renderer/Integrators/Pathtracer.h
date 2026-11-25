@@ -155,6 +155,7 @@ struct Pathtracer final : Integrator {
 
 	CUDAKernel kernel_generate;
 	CUDAKernel kernel_generate_vertex_counter;
+	CUDAKernel kernel_generate_quaternion_counter;
 	CUDAKernel kernel_trace_bvh2;
 	CUDAKernel kernel_trace_bvh4;
 	CUDAKernel kernel_trace_bvh8;
@@ -218,10 +219,16 @@ struct Pathtracer final : Integrator {
 		float3 position;
 		float3 normal;
 	};
+	struct QuaternionCounterDirection {
+		float3 direction;
+	};
 	CUDAMemory::Ptr<VertexCounterSeed> ptr_vertex_counter_seeds;
 	size_t vertex_counter_seed_count = 0;
+	CUDAMemory::Ptr<QuaternionCounterDirection> ptr_quaternion_counter_directions;
+	size_t quaternion_counter_direction_count = 0;
 	CUDAModule::Global global_counter_only_mode;
 	CUDAModule::Global global_vertex_counter_shadow_nee;
+	CUDAModule::Global global_quaternion_counter_batched_mode;
 
 	CUDAModule::Global global_svgf_data;
 
@@ -294,6 +301,8 @@ struct Pathtracer final : Integrator {
 	CUDAEvent::Desc event_desc_accumulate;
 	CUDAEvent::Desc event_desc_end;
 	bool fps_cuda_profiler_active = false;
+	std::vector<double> fps_rotation_times_ms;
+	std::vector<float> fps_rotation_values;
 
 	Pathtracer(unsigned frame_buffer_handle, int width, int height, Scene & scene) : Integrator(scene) {
 		cuda_init(frame_buffer_handle, width, height);
@@ -308,7 +317,9 @@ struct Pathtracer final : Integrator {
 	void init_luts();
 	void free_luts();
 	void init_vertex_counter_seeds();
+	void init_quaternion_counter_directions();
 	void render_vertex_counter_paths(int sample_index, int batch_size);
+	void render_quaternion_counter_paths(int position_index, int batch_size);
 
 	void resize_init(unsigned frame_buffer_handle, int width, int height) override; // Part of resize that initializes new size
 	void resize_free()                                                    override; // Part of resize that cleans up old size
@@ -327,5 +338,6 @@ struct Pathtracer final : Integrator {
 	void upload_directional_lights();
 	void begin_bvh8_measurement();
 	void write_experiment_fps_csv() const;
+	void write_experiment_fps_rotations_csv() const;
 	void write_bounce_ray_counts_csv() const;
 };

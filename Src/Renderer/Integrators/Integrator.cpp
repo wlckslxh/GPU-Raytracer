@@ -737,7 +737,27 @@ void Integrator::update(float delta, Allocator * frame_allocator) {
 			// counter rays do not consume the camera, and updating it here would
 			// reset the renderer sample index every counter frame.
 			if (!cpu_config.enable_vertex_counter_rays) {
-				if (cpu_config.use_dedicated_counter_camera_views && scene.counter_camera_views.size() > 0) {
+				if (cpu_config.counter_quaternions_per_position > 0) {
+					if (bvh_counter_dumped == 0) {
+						IO::print("Quaternion counter sampling ({}): {} path positions x {} global rotations = {} counter paths in {} GPU dispatch rounds.\n"_sv,
+							cpu_config.counter_quaternion_single_ray ? "single forward ray" : "full pixel frame",
+							cpu_config.counter_collection_frames,
+							cpu_config.counter_quaternions_per_position,
+							cpu_config.counter_collection_frames * uint64_t(cpu_config.counter_quaternions_per_position),
+							cpu_config.counter_collection_render_frames());
+					}
+					const uint64_t counter_sample_index = cpu_config.counter_quaternion_single_ray
+						? bvh_counter_dumped * uint64_t(cpu_config.counter_quaternions_per_position)
+						: bvh_counter_dumped;
+					invalidated_camera |= scene.set_uniform_quaternion_counter_sample(
+						counter_sample_index,
+						cpu_config.counter_collection_frames,
+						uint64_t(cpu_config.counter_quaternions_per_position),
+						cpu_config.counter_quaternion_distribution,
+						cpu_config.counter_quaternion_horizon_power,
+						cpu_config.counter_quaternion_horizon_mix,
+						cpu_config.counter_quaternion_roll_mode);
+				} else if (cpu_config.use_dedicated_counter_camera_views && scene.counter_camera_views.size() > 0) {
 					invalidated_camera |= scene.set_counter_camera_sample(
 						bvh_counter_dumped, cpu_config.counter_collection_frames);
 				} else {
@@ -755,14 +775,24 @@ void Integrator::update(float delta, Allocator * frame_allocator) {
 			break;
 		case ExperimentState::WARMING_UP_FPS:
 			// Warm up with a fixed camera, then restart the measured path at 0.
-			if (cpu_config.use_dedicated_fps_camera_views && scene.counter_camera_views.size() > 0) {
+			if (cpu_config.fps_uniform_quaternion_count > 0) {
+				invalidated_camera |= scene.set_uniform_quaternion_fps_sample(
+					0, 0, cpu_config.fps_measurement_frames,
+					uint64_t(cpu_config.fps_uniform_quaternion_count),
+					cpu_config.fps_quaternion_roll_mode);
+			} else if (cpu_config.use_dedicated_fps_camera_views && scene.counter_camera_views.size() > 0) {
 				invalidated_camera |= scene.set_counter_camera_sample(0, cpu_config.fps_measurement_frames);
 			} else {
 				invalidated_camera |= scene.set_camera_keyframe_sample(0, cpu_config.fps_measurement_frames);
 			}
 			break;
 		case ExperimentState::MEASURING_FPS:
-			if (cpu_config.use_dedicated_fps_camera_views && scene.counter_camera_views.size() > 0) {
+			if (cpu_config.fps_uniform_quaternion_count > 0) {
+				invalidated_camera |= scene.set_uniform_quaternion_fps_sample(
+					fps_rotation_index, measuringFrame, cpu_config.fps_measurement_frames,
+					uint64_t(cpu_config.fps_uniform_quaternion_count),
+					cpu_config.fps_quaternion_roll_mode);
+			} else if (cpu_config.use_dedicated_fps_camera_views && scene.counter_camera_views.size() > 0) {
 				invalidated_camera |= scene.set_counter_camera_sample(
 					measuringFrame, cpu_config.fps_measurement_frames);
 			} else {
@@ -863,9 +893,15 @@ void Integrator::collapseBVH() {
 			bvh_counter_results[0], bvh_counter_shadow_results[0], cpu_config.shadow_counter_weight,
 			cpu_config.normalize_primary_shadow_counters ? "root-normalized" : "raw-count");
 	}
-	if (cpu_config.enable_vertex_counter_rays && cpu_config.enable_vertex_counter_shadow_nee &&
-		!cpu_config.separate_primary_shadow_counters && bvh_counter_results.size() > 0) {
-		IO::print("Unified vertex P+S TLAS root: {}.\n"_sv, bvh_counter_results[0]);
+	if (!cpu_config.separate_primary_shadow_counters && bvh_counter_results.size() > 0) {
+		if (cpu_config.enable_vertex_counter_rays && cpu_config.enable_vertex_counter_shadow_nee) {
+			IO::print("Unified vertex P+S TLAS root: {}.\n"_sv, bvh_counter_results[0]);
+		} else if (cpu_config.counter_quaternion_single_ray &&
+			cpu_config.counter_quaternions_per_position > 0) {
+			IO::print("Unified quaternion single-ray TLAS root: {}.\n"_sv, bvh_counter_results[0]);
+		} else {
+			IO::print("Unified pixel TLAS root: {}.\n"_sv, bvh_counter_results[0]);
+		}
 	}
 
 	// Encode a normalized primary/shadow mixture back into a high-precision

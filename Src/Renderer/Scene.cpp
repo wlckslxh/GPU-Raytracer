@@ -3,7 +3,9 @@
 #include <ctype.h>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <stdio.h>
+#include <vector>
 
 #include "Core/IO.h"
 
@@ -146,9 +148,15 @@ void load_scene_file(Scene & scene, const String & scene_filename) {
 	}
 }
 
+Quaternion make_world_up_camera_rotation(const Vector3 & direction) {
+	const Vector3 reference_up = fabsf(direction.y) < 0.999f
+		? Vector3(0.0f, 1.0f, 0.0f) : Vector3(1.0f, 0.0f, 0.0f);
+	return Quaternion::normalize(Quaternion::look_rotation(-direction, reference_up));
+}
+
 } // namespace
 
-Scene::Scene(Allocator * allocator) : allocator(allocator), asset_manager(allocator), camera(Math::deg_to_rad(85.0f)), meshes(allocator), punctual_lights(allocator), directional_lights(allocator), camera_presets(allocator), counter_camera_views(allocator), camera_keyframes(allocator) {
+Scene::Scene(Allocator * allocator) : allocator(allocator), asset_manager(allocator), camera(Math::deg_to_rad(85.0f)), meshes(allocator), punctual_lights(allocator), directional_lights(allocator), camera_presets(allocator), counter_camera_views(allocator), uniform_counter_quaternions(allocator), uniform_fps_quaternions(allocator), camera_keyframes(allocator) {
 	LinearAllocator<MEGABYTES(4)> load_allocator;
 
 	for (int i = 0; i < cpu_config.scene_filenames.size(); i++) {
@@ -236,6 +244,199 @@ bool Scene::set_counter_camera_sample(uint64_t sample_index, uint64_t sample_cou
 		rotation_b = Quaternion(-rotation_b.x, -rotation_b.y, -rotation_b.z, -rotation_b.w);
 	}
 	set_counter_rotation(Quaternion::nlerp(a.rotation, rotation_b, t));
+	return true;
+}
+
+bool Scene::set_uniform_quaternion_counter_sample(
+	uint64_t render_index, uint64_t position_count, uint64_t quaternion_count,
+	CounterQuaternionDistribution distribution, float horizon_power, float horizon_mix,
+	CounterQuaternionRollMode roll_mode) {
+	if (position_count == 0 || quaternion_count == 0 || camera_keyframes.size() == 0) return false;
+
+	horizon_power = Math::max(horizon_power, 0.0f);
+	horizon_mix = Math::clamp(horizon_mix, 0.0f, 1.0f);
+	const bool sampling_changed =
+		cached_counter_quaternion_distribution != distribution ||
+		cached_counter_quaternion_horizon_power != horizon_power ||
+		cached_counter_quaternion_horizon_mix != horizon_mix ||
+		cached_counter_quaternion_roll_mode != roll_mode;
+	if (uniform_counter_quaternions.size() != quaternion_count || sampling_changed) {
+		uniform_counter_quaternions.clear();
+		uniform_counter_quaternions.reserve(quaternion_count);
+		cached_counter_quaternion_distribution = distribution;
+		cached_counter_quaternion_horizon_power = horizon_power;
+		cached_counter_quaternion_horizon_mix = horizon_mix;
+		cached_counter_quaternion_roll_mode = roll_mode;
+		// Keep the historical fixed-seed Shoemake path byte-for-byte equivalent
+		// so existing uniform experiments remain reproducible.
+		std::mt19937 random(0x51A7E123u);
+		std::uniform_real_distribution<float> uniform(0.0f, 1.0f);
+		double sum_abs_world_y = 0.0;
+		double sum_squared_world_y = 0.0;
+		double sum_world_up_alignment = 0.0;
+		for (uint64_t i = 0; i < quaternion_count; ++i) {
+			Quaternion rotation;
+			if (distribution == CounterQuaternionDistribution::UNIFORM) {
+				const float u1 = uniform(random);
+				const float u2 = uniform(random);
+				const float u3 = uniform(random);
+				const float root_one_minus_u1 = sqrtf(1.0f - u1);
+				const float root_u1 = sqrtf(u1);
+				const float angle_2 = TWO_PI * u2;
+				const float angle_3 = TWO_PI * u3;
+				rotation = Quaternion(
+					root_one_minus_u1 * sinf(angle_2),
+					root_one_minus_u1 * cosf(angle_2),
+					root_u1 * sinf(angle_3),
+					root_u1 * cosf(angle_3));
+				if (roll_mode == CounterQuaternionRollMode::WORLD_UP) {
+					// Preserve the exact historical Shoemake forward-direction sequence;
+					// only reconstruct its orientation with world-up zero roll.
+					const Vector3 direction = Vector3::normalize(
+						rotation * Vector3(0.0f, 0.0f, -1.0f));
+					rotation = make_world_up_camera_rotation(direction);
+				}
+			} else {
+				// Uniformly propose a direction on S^2, then accept the wall-biased
+				// component with probability sin(theta)^power, where theta is measured
+				// from world +Y. The resulting solid-angle density is therefore largest
+				// around the world-space equator and vanishes at the poles for power > 0.
+				const bool horizon_component = uniform(random) < horizon_mix;
+				Vector3 direction;
+				while (true) {
+					const float y = 1.0f - 2.0f * uniform(random);
+					const float azimuth = TWO_PI * uniform(random);
+					const float radial_squared = Math::max(1.0f - y * y, 0.0f);
+					const float radial = sqrtf(radial_squared);
+					direction = Vector3(radial * cosf(azimuth), y, radial * sinf(azimuth));
+					if (!horizon_component || horizon_power == 0.0f ||
+						uniform(random) <= powf(radial, horizon_power)) break;
+				}
+
+				// A direction alone leaves camera roll unspecified. Draw it uniformly
+				// so the camera and single-ray modes share directions without giving
+				// the full-frame camera an artificial world-up preference.
+				Quaternion look_rotation = make_world_up_camera_rotation(direction);
+				// Consume the roll variate in both modes so subsequent directions remain
+				// identical and the experiment changes roll alone.
+				const float roll_angle = TWO_PI * uniform(random);
+				if (roll_mode == CounterQuaternionRollMode::UNIFORM) {
+					Quaternion roll_rotation = Quaternion::axis_angle(direction, roll_angle);
+					rotation = Quaternion::normalize(roll_rotation * look_rotation);
+				} else {
+					rotation = look_rotation;
+				}
+			}
+			// q and -q encode the same rotation. Keep one S^3 representative.
+			if (rotation.w < 0.0f) {
+				rotation = Quaternion(-rotation.x, -rotation.y, -rotation.z, -rotation.w);
+			}
+			const Vector3 sampled_direction = Vector3::normalize(
+				rotation * Vector3(0.0f, 0.0f, -1.0f));
+			const Vector3 reference_up = fabsf(sampled_direction.y) < 0.999f
+				? Vector3(0.0f, 1.0f, 0.0f) : Vector3(1.0f, 0.0f, 0.0f);
+			const Vector3 projected_world_up = Vector3::normalize(
+				reference_up - Vector3::dot(reference_up, sampled_direction) * sampled_direction);
+			const Vector3 camera_up = Vector3::normalize(
+				rotation * Vector3(0.0f, 1.0f, 0.0f));
+			sum_abs_world_y += fabs(double(sampled_direction.y));
+			sum_squared_world_y += double(sampled_direction.y) * double(sampled_direction.y);
+			sum_world_up_alignment += double(Vector3::dot(camera_up, projected_world_up));
+			uniform_counter_quaternions.push_back(rotation);
+		}
+		const char * roll_label = roll_mode == CounterQuaternionRollMode::UNIFORM
+			? "uniform roll" : "world-up zero roll";
+		if (distribution == CounterQuaternionDistribution::UNIFORM) {
+			IO::print("Prepared {} global uniform-direction camera quaternions (Shoemake forward directions, fixed seed, {}, w >= 0).\n"_sv,
+				quaternion_count, roll_label);
+		} else {
+			IO::print("Prepared {} global world-horizon-sine camera quaternions (world +Y pole, sin(theta)^{}, horizon mix {}, fixed seed, {}).\n"_sv,
+				quaternion_count, horizon_power, horizon_mix, roll_label);
+		}
+		IO::print("Counter quaternion direction check: mean |world Y| {}, RMS world Y {} (smaller means stronger XZ-equator concentration).\n"_sv,
+			float(sum_abs_world_y / double(quaternion_count)),
+			float(sqrt(sum_squared_world_y / double(quaternion_count))));
+		std::printf("Counter quaternion roll check: mean camera-up alignment with projected world-up %.9f (world-up mode should be 1).\n",
+			double(sum_world_up_alignment / double(quaternion_count)));
+	}
+
+	const uint64_t position_index = render_index / quaternion_count;
+	const uint64_t quaternion_index = render_index % quaternion_count;
+	if (position_index >= position_count) return false;
+	if (!set_camera_keyframe_sample(position_index, position_count)) return false;
+	camera.rotation = uniform_counter_quaternions[quaternion_index];
+	return true;
+}
+
+bool Scene::set_uniform_quaternion_fps_sample(
+	uint64_t quaternion_index, uint64_t position_index, uint64_t position_count,
+	uint64_t quaternion_count, CounterQuaternionRollMode roll_mode) {
+	if (position_count == 0 || quaternion_count == 0 || quaternion_index >= quaternion_count || camera_keyframes.size() == 0) return false;
+
+	if (uniform_fps_quaternions.size() != quaternion_count || cached_fps_quaternion_roll_mode != roll_mode) {
+		uniform_fps_quaternions.clear();
+		uniform_fps_quaternions.reserve(quaternion_count);
+		cached_fps_quaternion_roll_mode = roll_mode;
+		// Deliberately independent from the counter-training quaternion seed.
+		std::mt19937 random(0xB17E5EEDu);
+		std::uniform_real_distribution<float> uniform(0.0f, 1.0f);
+		// The fourth raw sample clustered with the second and third samples on
+		// the world -X side. Use raw sample 7 as B3, then retain every displaced
+		// sample in deterministic order if a run requests more than four.
+		static constexpr uint64_t first_sample_order[8] = { 0, 1, 2, 7, 3, 4, 5, 6 };
+		const uint64_t candidate_count = Math::max(quaternion_count, uint64_t(8));
+		std::vector<Quaternion> candidates;
+		candidates.reserve(candidate_count);
+		for (uint64_t i = 0; i < candidate_count; ++i) {
+			const float u1 = uniform(random);
+			const float u2 = uniform(random);
+			const float u3 = uniform(random);
+			const float root_one_minus_u1 = sqrtf(1.0f - u1);
+			const float root_u1 = sqrtf(u1);
+			const float angle_2 = TWO_PI * u2;
+			const float angle_3 = TWO_PI * u3;
+			Quaternion rotation(
+				root_one_minus_u1 * sinf(angle_2),
+				root_one_minus_u1 * cosf(angle_2),
+				root_u1 * sinf(angle_3),
+				root_u1 * cosf(angle_3));
+			if (roll_mode == CounterQuaternionRollMode::WORLD_UP) {
+				const Vector3 direction = Vector3::normalize(
+					rotation * Vector3(0.0f, 0.0f, -1.0f));
+				rotation = make_world_up_camera_rotation(direction);
+			}
+			if (rotation.w < 0.0f) {
+				rotation = Quaternion(-rotation.x, -rotation.y, -rotation.z, -rotation.w);
+			}
+			candidates.push_back(rotation);
+		}
+		double sum_fps_world_up_alignment = 0.0;
+		for (uint64_t i = 0; i < quaternion_count; ++i) {
+			const uint64_t candidate_index = i < 8 ? first_sample_order[i] : i;
+			const Quaternion rotation = candidates[candidate_index];
+			uniform_fps_quaternions.push_back(rotation);
+			const Vector3 direction = Vector3::normalize(
+				rotation * Vector3(0.0f, 0.0f, -1.0f));
+			const Vector3 reference_up = fabsf(direction.y) < 0.999f
+				? Vector3(0.0f, 1.0f, 0.0f) : Vector3(1.0f, 0.0f, 0.0f);
+			const Vector3 projected_world_up = Vector3::normalize(
+				reference_up - Vector3::dot(reference_up, direction) * direction);
+			const Vector3 camera_up = Vector3::normalize(
+				rotation * Vector3(0.0f, 1.0f, 0.0f));
+			sum_fps_world_up_alignment += double(Vector3::dot(camera_up, projected_world_up));
+			std::printf("FPS test rotation B%llu = Quaternion(%.9g, %.9g, %.9g, %.9g)\n",
+				static_cast<unsigned long long>(i),
+				double(rotation.x), double(rotation.y), double(rotation.z), double(rotation.w));
+		}
+		IO::print("Prepared {} independent global FPS rotations (Shoemake forward directions, fixed seed, {}, w >= 0).\n"_sv,
+			quaternion_count,
+			roll_mode == CounterQuaternionRollMode::UNIFORM ? "uniform roll" : "world-up zero roll");
+		std::printf("FPS quaternion roll check: mean camera-up alignment with projected world-up %.9f (world-up mode should be 1).\n",
+			sum_fps_world_up_alignment / double(quaternion_count));
+	}
+
+	if (!set_camera_keyframe_sample(position_index, position_count)) return false;
+	camera.rotation = uniform_fps_quaternions[quaternion_index];
 	return true;
 }
 

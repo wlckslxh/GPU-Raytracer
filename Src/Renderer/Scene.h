@@ -1,6 +1,8 @@
 #pragma once
 #include "Core/Allocators/LinearAllocator.h"
 
+#include "Config.h"
+
 #include "Assets/AssetManager.h"
 
 #include "Camera.h"
@@ -53,6 +55,13 @@ struct Scene {
 	Array<DirectionalLight> directional_lights;
 	Array<CameraPreset> camera_presets;
 	Array<CameraPreset> counter_camera_views;
+	Array<Quaternion>   uniform_counter_quaternions;
+	Array<Quaternion>   uniform_fps_quaternions;
+	CounterQuaternionDistribution cached_counter_quaternion_distribution = CounterQuaternionDistribution::UNIFORM;
+	float               cached_counter_quaternion_horizon_power = -1.0f;
+	float               cached_counter_quaternion_horizon_mix = -1.0f;
+	CounterQuaternionRollMode cached_counter_quaternion_roll_mode = CounterQuaternionRollMode::UNIFORM;
+	CounterQuaternionRollMode cached_fps_quaternion_roll_mode = CounterQuaternionRollMode::UNIFORM;
 	Vector3             counter_camera_target;
 	bool                has_counter_camera_target = false;
 	Array<CameraKeyframe> camera_keyframes;
@@ -71,6 +80,13 @@ struct Scene {
 
 	bool set_camera_preset(size_t preset_index);
 	bool set_counter_camera_sample(uint64_t sample_index, uint64_t sample_count);
+	bool set_uniform_quaternion_counter_sample(
+		uint64_t render_index, uint64_t position_count, uint64_t quaternion_count,
+		CounterQuaternionDistribution distribution, float horizon_power, float horizon_mix,
+		CounterQuaternionRollMode roll_mode);
+	bool set_uniform_quaternion_fps_sample(
+		uint64_t quaternion_index, uint64_t position_index, uint64_t position_count,
+		uint64_t quaternion_count, CounterQuaternionRollMode roll_mode);
 	bool set_camera_keyframe_time(float time);
 	bool set_camera_keyframe_sample(uint64_t sample_index, uint64_t sample_count);
 

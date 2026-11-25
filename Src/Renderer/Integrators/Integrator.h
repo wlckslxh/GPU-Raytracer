@@ -243,6 +243,7 @@ struct Integrator {
 	};
 	ExperimentState experiment_state = ExperimentState::IDLE;
 	uint64_t measuringFrame = 0;
+	uint64_t fps_rotation_index = 0;
 	double total_frame_time_ms = 0.0;
 	float experiment_fps = 0.0f;
 	bool experiment_finished = false;
@@ -261,6 +262,14 @@ struct Integrator {
 		waldCollapse = cpu_config.enable_wald_collapse;
 		guRDTC = cpu_config.enable_gu_rdtc;
 		guRDTCThreshold = cpu_config.gu_rdtc_threshold;
+		if (cpu_config.counter_quaternions_per_position > 0 && cpu_config.enable_vertex_counter_rays) {
+			IO::print("Uniform camera-quaternion counter sampling cannot be combined with vertex counter rays.\n"_sv);
+			IO::exit(1);
+		}
+		if (cpu_config.counter_quaternion_single_ray && cpu_config.counter_quaternions_per_position <= 0) {
+			IO::print("Quaternion single-ray counter mode requires --counter-quaternions-per-position greater than zero.\n"_sv);
+			IO::exit(1);
+		}
 		if (cpu_config.enable_bvh2_to_bvh8_experiment) {
 			// A geometric collapse does not consume traversal counters. Do not run
 			// the BVH2 collection pass or allocate its counter buffers in that case.

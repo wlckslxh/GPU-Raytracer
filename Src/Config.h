@@ -22,6 +22,16 @@ enum struct CounterCostMode {
 	MAXIMUM
 };
 
+enum struct CounterQuaternionDistribution {
+	UNIFORM,
+	WORLD_HORIZON_SINE
+};
+
+enum struct CounterQuaternionRollMode {
+	UNIFORM,
+	WORLD_UP
+};
+
 enum struct MipmapFilterType {
 	BOX,
 	LANCZOS,
@@ -150,9 +160,45 @@ struct CPUConfig {
 	// Number of complete camera paths dispatched per pixel in one rendered
 	// frame. Each path uses an independent sample index.
 	int      rays_per_pixel_per_frame = 1;
+	// Zero preserves the historical camera-keyframe orientation. A positive
+	// value enables a globally generated set of uniformly distributed camera
+	// rotations and reuses all of them at every counter-path position.
+	int      counter_quaternions_per_position = 0;
+	// UNIFORM preserves the fixed-seed Shoemake sequence used by the existing
+	// experiments. WORLD_HORIZON_SINE samples directions around the world-space
+	// equator (+Y is the pole) with density proportional to sin(theta)^power.
+	CounterQuaternionDistribution counter_quaternion_distribution = CounterQuaternionDistribution::UNIFORM;
+	float    counter_quaternion_horizon_power = 1.0f;
+	// Mixture weight between uniform directions (0) and horizon-weighted
+	// directions (1). Roll remains uniform for both camera distributions.
+	float    counter_quaternion_horizon_mix = 1.0f;
+	// UNIFORM preserves the previous SO(3)/random-roll experiments. WORLD_UP
+	// keeps the sampled forward direction but removes camera roll.
+	CounterQuaternionRollMode counter_quaternion_roll_mode = CounterQuaternionRollMode::UNIFORM;
+	// False renders one complete pixel frame for every position/quaternion pair.
+	// True emits exactly one counter-only path along the rotated camera forward
+	// direction for every pair, independently of resolution and SPP.
+	bool     counter_quaternion_single_ray = false;
+	// Zero preserves the historical FPS camera rotations. A positive value
+	// measures the same camera-keyframe positions once for each independently
+	// generated, globally fixed uniform rotation after a single BVH collapse.
+	int      fps_uniform_quaternion_count = 0;
+	CounterQuaternionRollMode fps_quaternion_roll_mode = CounterQuaternionRollMode::UNIFORM;
 	uint64_t counter_collection_frames = 200ull;
 	uint64_t fps_warmup_frames = 10ull;
 	uint64_t fps_measurement_frames = 200ull;
+
+	uint64_t counter_collection_render_frames() const {
+		// Single-ray quaternion sampling batches every orientation at one path
+		// position into the same GPU dispatch. Full-frame sampling still renders
+		// one complete frame for every position/orientation pair.
+		if (counter_quaternion_single_ray && counter_quaternions_per_position > 0) {
+			return counter_collection_frames;
+		}
+		const uint64_t orientations = counter_quaternions_per_position > 0
+			? uint64_t(counter_quaternions_per_position) : 1ull;
+		return counter_collection_frames * orientations;
+	}
 
 	MipmapFilterType mipmap_filter = MipmapFilterType::BOX;
 

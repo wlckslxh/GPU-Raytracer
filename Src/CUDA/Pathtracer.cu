@@ -127,13 +127,19 @@ __device__ __constant__ unsigned long long * bounce_ray_counts;
 // but carry a synthetic path id instead of a framebuffer pixel index.
 __device__ __constant__ bool counter_only_mode;
 __device__ __constant__ bool vertex_counter_shadow_nee;
+__device__ __constant__ bool quaternion_counter_batched_mode;
 
 struct VertexCounterSeed {
 	float3 position;
 	float3 normal;
 };
 
+struct QuaternionCounterDirection {
+	float3 direction;
+};
+
 __device__ __constant__ const VertexCounterSeed * vertex_counter_seeds;
+__device__ __constant__ const QuaternionCounterDirection * quaternion_counter_directions;
 
 __device__ __constant__ Camera camera;
 
@@ -156,6 +162,21 @@ extern "C" __global__ void kernel_generate(int sample_index, int pixel_offset, i
 	ray_buffer_trace->traversal_data.ray_origin   .set(index, ray.origin);
 	ray_buffer_trace->traversal_data.ray_direction.set(index, ray.direction);
 	ray_buffer_trace->pixel_index_and_flags[index] = pixel_index;
+}
+
+extern "C" __global__ void kernel_generate_quaternion_counter(
+	int path_index_base, int direction_offset, int ray_count) {
+	int index = blockIdx.x * blockDim.x + threadIdx.x;
+	if (index >= ray_count) return;
+
+	// Directions are generated once from the fixed host-side Shoemake
+	// quaternions. All rays in this launch share the current path position.
+	float3 direction = quaternion_counter_directions[direction_offset + index].direction;
+
+	TraceBuffer * ray_buffer_trace = get_ray_buffer_trace(0);
+	ray_buffer_trace->traversal_data.ray_origin.set(index, camera.position);
+	ray_buffer_trace->traversal_data.ray_direction.set(index, direction);
+	ray_buffer_trace->pixel_index_and_flags[index] = unsigned(path_index_base + direction_offset + index) & ~FLAGS_ALL;
 }
 
 extern "C" __global__ void kernel_generate_vertex_counter(
@@ -300,6 +321,10 @@ extern "C" __global__ void kernel_sort(int bounce, int sample_index) {
 
 	unsigned pixel_index_and_flags = ray_buffer_trace->pixel_index_and_flags[index];
 	int      pixel_index = pixel_index_and_flags & ~FLAGS_ALL;
+	// Before batching, quaternion counter path n used n as both its synthetic
+	// pixel id and sample index. Preserve that exact RNG stream per ray even
+	// though a whole direction set now shares one kernel launch.
+	if (quaternion_counter_batched_mode) sample_index = pixel_index;
 
 	int x = pixel_index % screen_pitch;
 	int y = pixel_index / screen_pitch;
@@ -756,6 +781,7 @@ __device__ void shade_material(int bounce, int sample_index, int buffer_size) {
 
 	unsigned pixel_index_and_flags = material_buffer.buffer->pixel_index_and_flags[index];
 	int      pixel_index = pixel_index_and_flags & ~FLAGS_ALL;
+	if (quaternion_counter_batched_mode) sample_index = pixel_index;
 
 	bool inside_medium = pixel_index_and_flags & FLAG_INSIDE_MEDIUM;
 
